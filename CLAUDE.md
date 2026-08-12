@@ -26,6 +26,26 @@ changed first, deliberately, as its own commit.
 - Default is dry run. `--live` is required to write. Hard cap 10 per batch.
 - Never invent product facts. Copy is grounded in the live listing only.
 
+## Documentation — every function, no exceptions
+
+Every function opens with a docstring (`"""..."""` as the first line inside
+the function, not a `#` block above it) covering three things, in this order:
+
+1. **Why this function exists** — the problem it solves, in plain business
+   language. Not "wrapper around sqlite3.connect".
+2. **What it does** — the steps, described functionally.
+3. **What it returns** — type and meaning, including what `None` or an
+   empty result signifies.
+
+Written so someone who has never seen the file understands the *purpose*
+before reading a line of code.
+
+**Do not restate the code.** "Increments the counter" is worthless.
+"Counts rows so the operator can confirm the fetch actually landed data
+before running the generator against an empty table" is the point.
+
+Anything non-obvious gets a short inline comment saying **why**, not what.
+
 ## Working style
 
 - **One module per session. Do not write ahead.**
