@@ -1,5 +1,5 @@
-import sqlite3              # standard library database adapter — no pip install needed
 from pathlib import Path    # portable path handling; avoids raw string concatenation
+import sqlite3              # standard library database adapter — no pip install needed
 
 DB_PATH = Path("data/seo.db")  # canonical path to seo.db; every other module imports this constant
 
