@@ -46,6 +46,21 @@ before running the generator against an empty table" is the point.
 
 Anything non-obvious gets a short inline comment saying **why**, not what.
 
+## Function order — top-down, in call order
+
+Functions are laid out in the order they are called, so the file reads
+top to bottom like prose.
+
+`main()` first. Then whatever `main()` calls, in the order it calls them.
+Then their helpers, same rule, depth-first. Private helpers (`_name`) sit
+directly under the function that uses them.
+
+The `if __name__ == "__main__":` block stays at the bottom — it is the
+only part that executes on import order.
+
+Never alphabetical, never public-then-private. Someone reading the file
+from line 1 should follow the flow of control without scrolling back.
+
 ## Working style
 
 - **One module per session. Do not write ahead.**
