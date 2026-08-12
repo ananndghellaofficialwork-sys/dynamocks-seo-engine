@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dynamocks SEO Engine — Architecture v2</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #020617; min-height: 100vh; padding: 2rem; color: white; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container { background: rgba(15, 23, 42, 0.5); border-radius: 1rem; border: 1px solid #1e293b; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+    .toolbar { display: flex; gap: 0.5rem; margin-left: auto; flex-shrink: 0; align-items: center; }
+    .toolbar-toggle { background: transparent; border: none; color: #475569; cursor: pointer; font-size: 1.25rem; line-height: 1; padding: 0.25rem 0.5rem; border-radius: 0.375rem; transition: color 0.2s, background 0.2s; }
+    .toolbar-toggle:hover { color: #94a3b8; background: rgba(30, 41, 59, 0.5); }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button { background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; color: #94a3b8; padding: 0.375rem 0.75rem; border-radius: 0.375rem; font-family: inherit; font-size: 0.75rem; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+    .toolbar-actions button:hover { background: rgba(51, 65, 85, 0.8); color: white; border-color: #475569; }
+    @media print { body { background: #020617; padding: 1rem; } .toolbar { display: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Dynamocks SEO Engine — Architecture v2</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">Manual-first pipeline for a live 472-product store. The agent earns autonomy; it is never granted.</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 790">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowrose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ============ ARROWS FIRST (render behind boxes) ============ -->
+
+        <!-- store -> fetch -->
+        <path d="M 430 96 L 430 124 L 141 124 L 141 146" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="280" y="118" fill="#94a3b8" font-size="8" text-anchor="middle">1 · read-only fetch</text>
+
+        <!-- row 1 chain — 4 steps -->
+        <line x1="242" y1="182" x2="276" y2="182" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="484" y1="182" x2="518" y2="182" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="726" y1="182" x2="760" y2="182" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- verify rejects → back to generate, once -->
+        <path d="M 867 218 L 867 238 L 625 238 L 625 220" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowrose)"/>
+        <text x="746" y="234" fill="#fb7185" font-size="7" text-anchor="middle">rejected · 1 retry only</text>
+
+        <!-- row 1 down into SQLite -->
+        <line x1="141" y1="216" x2="141" y2="266" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="383" y1="216" x2="383" y2="266" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="524" y1="220" x2="504" y2="266" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="900" y1="220" x2="900" y2="266" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- SQLite down into row 2 -->
+        <line x1="888" y1="442" x2="888" y2="486" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="504" y1="442" x2="504" y2="486" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- row 2 chain, right to left -->
+        <line x1="806" y1="522" x2="780" y2="522" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowrose)"/>
+        <line x1="614" y1="522" x2="588" y2="522" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowrose)"/>
+
+        <!-- push -> store (wraps around the left) -->
+        <path d="M 422 522 L 20 522 L 20 64 L 376 64" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="20" y="300" fill="#fbbf24" font-size="8" text-anchor="middle" transform="rotate(-90 20 300)">6 · write max 10 · dry run by default · undo first · re-read to verify</text>
+
+        <!-- ============ SHOPIFY STORE ============ -->
+        <rect x="376" y="30" width="248" height="66" rx="6" fill="#0f172a"/>
+        <rect x="376" y="30" width="248" height="66" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="500" y="54" fill="white" font-size="12" font-weight="600" text-anchor="middle">Shopify Store — source of truth</text>
+        <text x="500" y="71" fill="#94a3b8" font-size="9" text-anchor="middle">472 products · Admin GraphQL API</text>
+        <text x="500" y="87" fill="#fbbf24" font-size="8" text-anchor="middle">productUpdate(product: ProductUpdateInput!)</text>
+
+        <!-- ============ ROW 1 — READ, SCORE, GENERATE, GATE — 4 files ============ -->
+        <rect x="40" y="150" width="202" height="70" rx="6" fill="#0f172a"/>
+        <rect x="40" y="150" width="202" height="70" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="141" y="172" fill="white" font-size="11" font-weight="600" text-anchor="middle">1 · fetch.py</text>
+        <text x="141" y="188" fill="#94a3b8" font-size="8" text-anchor="middle">Shopify API → SQLite direct</text>
+        <text x="141" y="201" fill="#94a3b8" font-size="8" text-anchor="middle">no CSV hop</text>
+        <text x="141" y="214" fill="#fb7185" font-size="7" text-anchor="middle">captures store_updated_at</text>
+
+        <rect x="282" y="150" width="202" height="70" rx="6" fill="#0f172a"/>
+        <rect x="282" y="150" width="202" height="70" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="383" y="172" fill="white" font-size="11" font-weight="600" text-anchor="middle">2 · prioritise.py</text>
+        <text x="383" y="188" fill="#94a3b8" font-size="8" text-anchor="middle">revenue × null-seo_title</text>
+        <text x="383" y="201" fill="#94a3b8" font-size="8" text-anchor="middle">× dup-cluster × in-stock</text>
+        <text x="383" y="214" fill="#fbbf24" font-size="7" text-anchor="middle">SQL and arithmetic · NO LLM</text>
+
+        <rect x="524" y="150" width="202" height="70" rx="6" fill="#0f172a"/>
+        <rect x="524" y="150" width="202" height="70" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="625" y="172" fill="white" font-size="11" font-weight="600" text-anchor="middle">3 · generate.py</text>
+        <text x="625" y="188" fill="#94a3b8" font-size="8" text-anchor="middle">LLM · forced schema</text>
+        <text x="625" y="201" fill="#94a3b8" font-size="8" text-anchor="middle">one field, one call</text>
+        <text x="625" y="214" fill="#fbbf24" font-size="7" text-anchor="middle">the ONLY file that calls a model</text>
+
+        <rect x="766" y="150" width="202" height="70" rx="6" fill="#0f172a"/>
+        <rect x="766" y="150" width="202" height="70" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="867" y="172" fill="white" font-size="11" font-weight="600" text-anchor="middle">4 · verify.py</text>
+        <text x="867" y="188" fill="#94a3b8" font-size="8" text-anchor="middle">embeddings · cosine similarity</text>
+        <text x="867" y="201" fill="#94a3b8" font-size="8" text-anchor="middle">+ rubric vs 49 gold outputs</text>
+        <text x="867" y="214" fill="#fb7185" font-size="7" text-anchor="middle">GATE 1 · machine</text>
+
+        <!-- ============ SQLITE ============ -->
+        <rect x="40" y="266" width="930" height="176" rx="10" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="56" y="288" fill="#a78bfa" font-size="11" font-weight="700">db.py → SQLite · data/seo.db — single file, transactional, zero infrastructure</text>
+        <text x="960" y="288" fill="#64748b" font-size="8" text-anchor="end">Postgres rejected: 472 rows. Vector DB rejected: brute-force cosine is sub-ms at this scale.</text>
+
+        <rect x="56" y="300" width="170" height="126" rx="6" fill="#0f172a"/>
+        <rect x="56" y="300" width="170" height="126" rx="6" fill="rgba(76, 29, 149, 0.35)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="141" y="320" fill="white" font-size="10" font-weight="600" text-anchor="middle">products</text>
+        <text x="141" y="337" fill="#a78bfa" font-size="7" text-anchor="middle">MIRROR · disposable</text>
+        <text x="141" y="354" fill="#94a3b8" font-size="8" text-anchor="middle">gid · handle · sku</text>
+        <text x="141" y="368" fill="#94a3b8" font-size="8" text-anchor="middle">seo_title · seo_description</text>
+        <text x="141" y="382" fill="#94a3b8" font-size="8" text-anchor="middle">status · total_inventory</text>
+        <text x="141" y="396" fill="#94a3b8" font-size="8" text-anchor="middle">store_updated_at</text>
+        <text x="141" y="414" fill="#fb7185" font-size="7" text-anchor="middle">staleness guard lives here</text>
+
+        <rect x="242" y="300" width="170" height="126" rx="6" fill="#0f172a"/>
+        <rect x="242" y="300" width="170" height="126" rx="6" fill="rgba(76, 29, 149, 0.35)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="327" y="320" fill="white" font-size="10" font-weight="600" text-anchor="middle">metrics</text>
+        <text x="327" y="337" fill="#a78bfa" font-size="7" text-anchor="middle">PRIORITISATION</text>
+        <text x="327" y="354" fill="#94a3b8" font-size="8" text-anchor="middle">revenue_12mo</text>
+        <text x="327" y="368" fill="#94a3b8" font-size="8" text-anchor="middle">units_12mo</text>
+        <text x="327" y="382" fill="#94a3b8" font-size="8" text-anchor="middle">priority_score</text>
+        <text x="327" y="414" fill="#fbbf24" font-size="7" text-anchor="middle">money decides the queue</text>
+
+        <rect x="428" y="300" width="170" height="126" rx="6" fill="#0f172a"/>
+        <rect x="428" y="300" width="170" height="126" rx="6" fill="rgba(76, 29, 149, 0.35)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="513" y="320" fill="white" font-size="10" font-weight="600" text-anchor="middle">proposals</text>
+        <text x="513" y="337" fill="#34d399" font-size="7" text-anchor="middle">APPEND-ONLY · audit trail</text>
+        <text x="513" y="354" fill="#94a3b8" font-size="8" text-anchor="middle">current · proposed value</text>
+        <text x="513" y="368" fill="#94a3b8" font-size="8" text-anchor="middle">model · prompt_version</text>
+        <text x="513" y="382" fill="#94a3b8" font-size="8" text-anchor="middle">max_similarity · eval_score</text>
+        <text x="513" y="396" fill="#94a3b8" font-size="8" text-anchor="middle">status · reviewer_note</text>
+        <text x="513" y="414" fill="#fb7185" font-size="7" text-anchor="middle">never updated in place</text>
+
+        <rect x="614" y="300" width="170" height="126" rx="6" fill="#0f172a"/>
+        <rect x="614" y="300" width="170" height="126" rx="6" fill="rgba(76, 29, 149, 0.35)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="699" y="320" fill="white" font-size="10" font-weight="600" text-anchor="middle">pushes</text>
+        <text x="699" y="337" fill="#fb7185" font-size="7" text-anchor="middle">THE UNDO LOG</text>
+        <text x="699" y="354" fill="#94a3b8" font-size="8" text-anchor="middle">before_value ← the undo</text>
+        <text x="699" y="368" fill="#94a3b8" font-size="8" text-anchor="middle">after_value · batch_id</text>
+        <text x="699" y="382" fill="#94a3b8" font-size="8" text-anchor="middle">autonomy_level at write</text>
+        <text x="699" y="396" fill="#94a3b8" font-size="8" text-anchor="middle">verified_at · rolled_back_at</text>
+        <text x="699" y="414" fill="#fb7185" font-size="7" text-anchor="middle">written BEFORE the write</text>
+
+        <rect x="800" y="300" width="154" height="126" rx="6" fill="#0f172a"/>
+        <rect x="800" y="300" width="154" height="126" rx="6" fill="rgba(76, 29, 149, 0.35)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="877" y="320" fill="white" font-size="10" font-weight="600" text-anchor="middle">embeddings</text>
+        <text x="877" y="337" fill="#a78bfa" font-size="7" text-anchor="middle">BLOB vectors</text>
+        <text x="877" y="354" fill="#94a3b8" font-size="8" text-anchor="middle">gid · field</text>
+        <text x="877" y="368" fill="#94a3b8" font-size="8" text-anchor="middle">vector · model</text>
+        <text x="877" y="396" fill="#fbbf24" font-size="7" text-anchor="middle">no vector DB</text>
+        <text x="877" y="410" fill="#fbbf24" font-size="7" text-anchor="middle">at 472 rows</text>
+
+        <!-- ============ ROW 2 — HUMAN CONTROL + PUSH ============ -->
+        <rect x="808" y="490" width="162" height="66" rx="6" fill="#0f172a"/>
+        <rect x="808" y="490" width="162" height="66" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="889" y="514" fill="white" font-size="11" font-weight="600" text-anchor="middle">5 · review.py</text>
+        <text x="889" y="530" fill="#94a3b8" font-size="8" text-anchor="middle">export → review.csv</text>
+        <text x="889" y="544" fill="#94a3b8" font-size="8" text-anchor="middle">import ← approved.csv</text>
+
+        <rect x="600" y="474" width="194" height="98" rx="8" fill="transparent" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="608" y="488" fill="#fb7185" font-size="8">human-in-the-loop · L0–L2</text>
+        <rect x="616" y="490" width="162" height="66" rx="6" fill="#0f172a"/>
+        <rect x="616" y="490" width="162" height="66" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="697" y="514" fill="white" font-size="11" font-weight="600" text-anchor="middle">BUSINESS OWNER</text>
+        <text x="697" y="530" fill="#94a3b8" font-size="8" text-anchor="middle">approves every batch</text>
+        <text x="697" y="544" fill="#fb7185" font-size="7" text-anchor="middle">GATE 2 · human · a spreadsheet, not a UI</text>
+
+        <rect x="424" y="490" width="162" height="66" rx="6" fill="#0f172a"/>
+        <rect x="424" y="490" width="162" height="66" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="505" y="514" fill="white" font-size="11" font-weight="600" text-anchor="middle">6 · push.py</text>
+        <text x="505" y="530" fill="#94a3b8" font-size="8" text-anchor="middle">max 10 · undo first · verify</text>
+        <text x="505" y="544" fill="#fb7185" font-size="7" text-anchor="middle">aborts if store is newer</text>
+
+        <!-- ============ AUTONOMY LADDER ============ -->
+        <rect x="40" y="474" width="360" height="128" rx="10" fill="transparent" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="54" y="492" fill="#fbbf24" font-size="10" font-weight="700">AUTONOMY LADDER — the agent is promoted, never granted</text>
+
+        <rect x="54" y="502" width="332" height="22" rx="4" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="62" y="517" fill="#fbbf24" font-size="8" font-weight="700">L0 MANUAL</text>
+        <text x="380" y="517" fill="#94a3b8" font-size="7" text-anchor="end">human decides + human writes  ← WE ARE HERE</text>
+
+        <rect x="54" y="527" width="332" height="22" rx="4" fill="rgba(30, 41, 59, 0.5)" stroke="#475569" stroke-width="1"/>
+        <text x="62" y="542" fill="#94a3b8" font-size="8" font-weight="700">L1 ASSISTED</text>
+        <text x="380" y="542" fill="#64748b" font-size="7" text-anchor="end">gate: 30 proposals accepted unedited</text>
+
+        <rect x="54" y="552" width="332" height="22" rx="4" fill="rgba(30, 41, 59, 0.5)" stroke="#475569" stroke-width="1"/>
+        <text x="62" y="567" fill="#94a3b8" font-size="8" font-weight="700">L2 SUPERVISED</text>
+        <text x="380" y="567" fill="#64748b" font-size="7" text-anchor="end">gate: 3 clean batches, eval ≥ 0.9</text>
+
+        <rect x="54" y="577" width="332" height="22" rx="4" fill="rgba(30, 41, 59, 0.5)" stroke="#475569" stroke-width="1"/>
+        <text x="62" y="592" fill="#94a3b8" font-size="8" font-weight="700">L3 BOUNDED</text>
+        <text x="380" y="592" fill="#64748b" font-size="7" text-anchor="end">gate: 90 days L2, no incident</text>
+
+        <text x="54" y="620" fill="#fb7185" font-size="8" font-weight="600">Any rollback demotes one level, automatically. Blast radius never widens: 10 products/run, seo fields only.</text>
+
+        <!-- ============ LEGEND ============ -->
+        <text x="40" y="666" fill="white" font-size="10" font-weight="600">Legend</text>
+
+        <rect x="40" y="678" width="16" height="10" rx="2" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+        <text x="62" y="686" fill="#94a3b8" font-size="8">External system</text>
+
+        <rect x="180" y="678" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="202" y="686" fill="#94a3b8" font-size="8">Pipeline step</text>
+
+        <rect x="320" y="678" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="342" y="686" fill="#94a3b8" font-size="8">Persistence</text>
+
+        <rect x="460" y="678" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="482" y="686" fill="#94a3b8" font-size="8">Gate / human control</text>
+
+        <rect x="640" y="678" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="662" y="686" fill="#94a3b8" font-size="8">Write path</text>
+
+        <rect x="780" y="678" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="802" y="686" fill="#94a3b8" font-size="8">Review interface</text>
+
+        <text x="40" y="716" fill="#64748b" font-size="8">Seven files total: db.py (schema) + the six numbered steps. One job each, each runs standalone from the terminal. agent.py — chooses which step runs next — is NOT built at L0.</text>
+        <text x="40" y="734" fill="#64748b" font-size="8">Out of scope permanently: product.title · price · status · inventory. The business owner owns those.</text>
+        <text x="40" y="752" fill="#64748b" font-size="8">Untrusted input: product descriptions are treated as hostile — instruction-shaped content is stripped before the model sees it, with a trap listing in the test suite.</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot rose"></div>
+          <h3>Guardrails</h3>
+        </div>
+        <ul>
+          <li>• Undo written <em>before</em> every write, at every level</li>
+          <li>• Staleness guard: abort if the store changed since generation</li>
+          <li>• Semantic uniqueness gate vs all live copy + batch siblings</li>
+          <li>• Eval score vs 49 human-approved gold outputs</li>
+          <li>• Max 10 products per run — a permanent ceiling</li>
+          <li>• One retry on collision, then it asks for a human</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Decisions &amp; rejected alternatives</h3>
+        </div>
+        <ul>
+          <li>• SQLite over Postgres — 472 rows, one file, transactional</li>
+          <li>• Embeddings over a vector DB — brute-force cosine is sub-ms here; a vector store earns its place at ~50k docs</li>
+          <li>• CSV review over a web UI — meet the reviewer where she works</li>
+          <li>• GraphQL <code>productUpdate(product:)</code> — the <code>input:</code> form is deprecated, verified against the live schema</li>
+          <li>• <code>seo.title</code> first — null on ~99%, so nothing good can be destroyed</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>Why manual first</h3>
+        </div>
+        <ul>
+          <li>• This is a live business, not a sandbox</li>
+          <li>• 49 listings improved by hand became the evaluation baseline — the hardest asset in any eval, produced as a by-product</li>
+          <li>• Every module except <code>agent.py</code> is used at L0 and unchanged at L2</li>
+          <li>• Promotion criteria were written before the agent existed — criteria written after are rationalisations</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      Dynamocks SEO Engine v2 • Design frozen 7 Aug 2026 • github.com/ananndghellaofficialwork-sys/Clean-AI-Agent
+    </p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'dynamocks-seo-architecture-v2.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: canvas.width > canvas.height ? 'landscape' : 'portrait', unit: 'px', format: [canvas.width, canvas.height] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('dynamocks-seo-architecture-v2.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>
