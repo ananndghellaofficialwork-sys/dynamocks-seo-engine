@@ -1,7 +1,9 @@
-from pathlib import Path    # portable path handling; avoids raw string concatenation
-import sqlite3              # standard library database adapter — no pip install needed
+import sqlite3  # standard library database adapter — no pip install needed
+from pathlib import Path  # portable path handling; avoids raw string concatenation
 
-DB_PATH = Path("data/seo.db")  # canonical path to seo.db; every other module imports this constant
+DB_PATH = Path(
+    "data/seo.db"
+)  # canonical path to seo.db; every other module imports this constant
 
 # _DDL holds the full schema for all five tables.
 # Prefixed _ to signal module-private; other modules never reference it directly.
@@ -142,11 +144,17 @@ ON CONFLICT(gid) DO UPDATE SET    -- gid already exists: overwrite every column 
 #            — every module that reads from or writes to seo.db.
 # ─────────────────────────────────────────────────────────────────────────────
 def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)        # create data/ directory if it does not exist yet
-    conn = sqlite3.connect(DB_PATH)            # open seo.db; creates the file on first call
-    conn.row_factory = sqlite3.Row             # rows come back as dict-like objects, not plain tuples
-    conn.execute("PRAGMA foreign_keys = ON")   # activate FK enforcement; SQLite ignores FKs by default
-    return conn                                # caller owns the connection — must close it explicitly
+    DB_PATH.parent.mkdir(
+        exist_ok=True
+    )  # create data/ directory if it does not exist yet
+    conn = sqlite3.connect(DB_PATH)  # open seo.db; creates the file on first call
+    conn.row_factory = (
+        sqlite3.Row
+    )  # rows come back as dict-like objects, not plain tuples
+    conn.execute(
+        "PRAGMA foreign_keys = ON"
+    )  # activate FK enforcement; SQLite ignores FKs by default
+    return conn  # caller owns the connection — must close it explicitly
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -173,7 +181,9 @@ def connect() -> sqlite3.Connection:
 # Called by: fetch.py — once at startup, before the first upsert_product call.
 # ─────────────────────────────────────────────────────────────────────────────
 def init_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(_DDL)    # run all five CREATE TABLE IF NOT EXISTS statements in one script block
+    conn.executescript(
+        _DDL
+    )  # run all five CREATE TABLE IF NOT EXISTS statements in one script block
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,7 +214,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
 # Called by: fetch.py — once per product in the Shopify GraphQL response.
 # ─────────────────────────────────────────────────────────────────────────────
 def upsert_product(conn: sqlite3.Connection, row: dict) -> None:
-    conn.execute(_UPSERT_PRODUCT, row)    # bind :key placeholders from row dict; does not commit
+    conn.execute(
+        _UPSERT_PRODUCT, row
+    )  # bind :key placeholders from row dict; does not commit
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,5 +241,7 @@ def upsert_product(conn: sqlite3.Connection, row: dict) -> None:
 # Called by: fetch.py — after conn.commit(), to print the final loaded row count.
 # ─────────────────────────────────────────────────────────────────────────────
 def count_products(conn: sqlite3.Connection) -> int:
-    result = conn.execute("SELECT COUNT(*) FROM products").fetchone()    # single-row result from the aggregate
-    return result[0]                                                      # index 0 is the COUNT(*) integer
+    result = conn.execute(
+        "SELECT COUNT(*) FROM products"
+    ).fetchone()  # single-row result from the aggregate
+    return result[0]  # index 0 is the COUNT(*) integer

@@ -6,6 +6,11 @@ listing. Never invent colours, materials, sizes or features.
 ## seo.title
 - Under 60 characters
 - Lead with what someone types into Google, not the brand name
+- Never lead with a generic descriptor — "patterned", "designer", "stylish",
+  "premium", "quality". Lead with what makes THIS product different from the
+  rest of the catalog: its colour, its motif, or who it's for.
+- No two products may share a title. If the obvious title is already used,
+  go one level more specific.
 - End with " | Dynamocks"
 - NEVER leave empty
 
