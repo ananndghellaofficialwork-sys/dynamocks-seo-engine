@@ -1,5 +1,5 @@
 # Listing copy prompt — v1
-
+Dont close the Shopify SEO drawer intil both the title and description boxes have text in them.
 Write SEO fields for one Dynamocks product. Ground every claim in the live
 listing. Never invent colours, materials, sizes or features.
 
