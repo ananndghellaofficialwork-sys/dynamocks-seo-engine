@@ -93,12 +93,21 @@ def generate_for_products(
     """
     WHAT IT DOES:
       Runs the whole generate stage end to end. Loads the prompt once, pulls
-      the products that still have no seo_title, and for each one builds a
-      message, calls the model, parses the reply, and appends one proposal row
-      per field. Prints a line per product so a run can be watched, commits
-      once at the end, then reads the proposals count back out of the database
-      and prints it — the count is read from the table, not accumulated in a
-      variable, so the number printed is evidence the rows actually landed.
+      the products that still have no seo_title and no proposal yet, and for
+      each one builds a message, calls the model, parses the reply, and
+      appends one proposal row per field. Prints a line per product so a run
+      can be watched.
+
+      Commits after every product, and isolates every product in a try/except:
+      one bad response is printed and stepped over, and the products already
+      finished stay committed. It does not retry, back off or sleep. A failed
+      product is simply left without a proposal, and the NOT EXISTS clause in
+      get_products_needing_seo() hands it back on the next run.
+
+      Finishes by reading the proposals count back out of the database — read
+      from the table, not accumulated in a variable, so the number printed is
+      evidence the rows actually landed — alongside the success and failure
+      tallies for this run.
 
       Called by: the operator, from the REPL, once per run. Nothing in the
                  codebase calls it; this module has no main() by design,
@@ -115,9 +124,17 @@ def generate_for_products(
       save_proposal() by hand. That would work for three products and fall
       apart at four hundred, and worse, the commit boundary and the
       two-rows-per-product invariant would live in whatever was typed that
-      day rather than in the file. Putting the loop here means one commit at
-      the end (a failed run leaves the table untouched rather than half
-      filled) and means both fields are always written together.
+      day rather than in the file. Putting the loop here means the commit
+      boundary is one product wide and means both fields are always written
+      together.
+
+      The rejected alternative on the commit was a single commit at the end of
+      the batch, which is what fetch.py's per-page commit already argues
+      against: four hundred products is a run measured in hours, and one
+      malformed response an hour in would roll back every product that had
+      already succeeded. Per-product commits make the unit of loss one
+      product. That only works because the query skips products that already
+      have proposals — the two changes are one change.
 
     WHAT IT RETURNS, AND WHO CONSUMES IT:
       None. The return value is not the point — the proposal rows are.
@@ -128,6 +145,11 @@ def generate_for_products(
       as a hole in the table on purpose, so it shows up in a count rather
       than being papered over.
 
+      The printed failure tally is the other half of that: a run that reports
+      failures has left those products untouched for the next run, and a
+      failure count that does not fall between runs is a prompt or provider
+      problem rather than a flaky one.
+
       verify.py reads those draft rows next, sets uniqueness_status and
       eval_score on them, and moves them along the §6.2 state machine.
     """
@@ -135,37 +157,50 @@ def generate_for_products(
     products = get_products_needing_seo(conn, limit)
     print(f"{len(products)} products need seo_title — generating with {model_ref}")
 
+    succeeded = 0
+    failed = 0
+
     for product in products:
-        message = build_message(product, prompt_text)
-        reply = call_model(message, model_ref)
-        fields = parse_response(reply)
+        try:
+            message = build_message(product, prompt_text)
+            reply = call_model(message, model_ref)
+            fields = parse_response(reply)
 
-        for field in ("seo_title", "seo_description"):
-            proposed = fields[field]
-            if not proposed:
-                # Left deliberately unwritten. proposed_value is NOT NULL, and
-                # inserting a placeholder would hide the omission from the
-                # count that verify.py and the reviewer work from.
-                print(f"  ! {product['handle']} — {field} MISSING, no row written")
-                continue
+            for field in ("seo_title", "seo_description"):
+                proposed = fields[field]
+                if not proposed:
+                    # Left deliberately unwritten. proposed_value is NOT NULL, and
+                    # inserting a placeholder would hide the omission from the
+                    # count that verify.py and the reviewer work from.
+                    print(f"  ! {product['handle']} — {field} MISSING, no row written")
+                    continue
 
-            save_proposal(
-                conn,
-                gid=product["gid"],
-                field=field,
-                # The live value at generation time, so a later diff shows what
-                # actually changed rather than what the store says today.
-                current_value=product["seo_description"] if field == "seo_description" else None,
-                proposed_value=proposed,
-                model=model_ref,
-                prompt_version=version_tag,
-            )
+                save_proposal(
+                    conn,
+                    gid=product["gid"],
+                    field=field,
+                    # The live value at generation time, so a later diff shows what
+                    # actually changed rather than what the store says today.
+                    current_value=product["seo_description"] if field == "seo_description" else None,
+                    proposed_value=proposed,
+                    model=model_ref,
+                    prompt_version=version_tag,
+                )
 
-        print(f"  {product['handle']}: {fields['seo_title']}")
+            conn.commit()  # per product: a later failure cannot cost this one
+            succeeded += 1
+            print(f"  {product['handle']}: {fields['seo_title']}")
 
-    conn.commit()  # single commit: a crash mid-run leaves proposals untouched
+        except Exception as error:
+            # Fault isolation, not error handling. Nothing is retried and
+            # nothing is slept on — the product keeps no proposal row, so the
+            # next run's NOT EXISTS clause returns it and tries it again.
+            conn.rollback()  # drop the half-written pair; never leave one field of two
+            failed += 1
+            print(f"  ! {product['handle']} FAILED — {type(error).__name__}: {error}")
+
     total = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
-    print(f"done — {total} rows in proposals")
+    print(f"done — {succeeded} succeeded, {failed} failed, {total} rows in proposals")
 
 
 def load_prompt(version: str) -> tuple[str, str]:
@@ -210,10 +245,19 @@ def get_products_needing_seo(conn: sqlite3.Connection, limit: int) -> list[sqlit
     WHAT IT DOES:
       Selects products whose seo_title is still empty — NULL on a product that
       has never had one, empty string on a product where the field exists but
-      holds nothing — and returns only the columns the prompt is allowed to
-      see. Orders by gid so the same limit returns the same products on a
-      repeat run; that repeatability is what makes a three-product test run
-      worth anything.
+      holds nothing — and which have no row in proposals yet. Returns only the
+      columns the prompt is allowed to see.
+
+      The NOT EXISTS clause is what makes a run resumable. Without it every
+      run starts at the top of the catalog and regenerates the same first few
+      products, so a limit of 10 run forty times produces forty proposals for
+      ten products rather than proposals for four hundred. With it, each run
+      walks forward from wherever the last one stopped, and a product that
+      failed mid-run comes back because failure left it with no rows.
+
+      Orders by gid so that walk is deterministic: the same limit returns the
+      same next slice on a repeat run, which is what makes a three-product
+      test worth anything before a four-hundred-product one.
 
       Called by: generate_for_products(), once per run.
 
@@ -223,13 +267,16 @@ def get_products_needing_seo(conn: sqlite3.Connection, limit: int) -> list[sqlit
 
     WHY IT IS ITS OWN FUNCTION:
       The rejected alternative was an inline SELECT inside the orchestrator's
-      loop header. Two things go wrong there. First, the column list is the
+      loop header. Three things go wrong there. First, the column list is the
       grounding contract — it is the complete set of facts the model may use,
       and that decision deserves to be visible in one place rather than buried
       in a loop. Second, the work-queue rule is going to change: §6.3 defines
       a priority_score that prioritise.py will compute, and when the ordering
       moves from "by gid" to "by priority_score" it is this function that
-      changes and nothing else.
+      changes and nothing else. Third, "already done" is now part of the
+      definition of the queue rather than something the caller remembers, so
+      the orchestrator has no offset to track and no state to carry between
+      runs — the table is the state.
 
     WHAT IT RETURNS, AND WHO CONSUMES IT:
       A list of sqlite3.Row, at most `limit` long, each supporting
@@ -251,7 +298,13 @@ def get_products_needing_seo(conn: sqlite3.Connection, limit: int) -> list[sqlit
             tags,
             seo_description
         FROM products
-        WHERE seo_title IS NULL OR seo_title = ''
+        WHERE (seo_title IS NULL OR seo_title = '')
+          AND NOT EXISTS
+          (
+              SELECT 1
+              FROM proposals
+              WHERE proposals.gid = products.gid
+          )
         ORDER BY gid
         LIMIT :limit
         """,

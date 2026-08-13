@@ -5,19 +5,26 @@ listing. Never invent colours, materials, sizes or features.
 
 ## seo.title
 - Under 60 characters
-- Lead with what someone types into Google, not the brand name
+- Lead with what someone types into Google — the colour, motif, material or
+  audience. Not the brand, not the style name.
+- The style name (Beam, Banger, RITZ, MONO) is NOT a search term. Nobody
+  googles it. Put it AFTER the descriptive phrase, or leave it out entirely.
 - Never lead with a generic descriptor — "patterned", "designer", "stylish",
   "premium", "quality". Lead with what makes THIS product different from the
-  rest of the catalog: its colour, its motif, or who it's for.
-- No two products may share a title. If the obvious title is already used,
+  rest of the catalog.
+- No inventory language. "1 Pair", "Pack of 1", SKU codes and size counts are
+  not search terms.
+- No two products may share a title. If the obvious title is already taken,
   go one level more specific.
 - End with " | Dynamocks"
 - NEVER leave empty
 
 Approved examples:
-  Striped Dress Socks 6 Pack for Work | Dynamocks
-  Men's Sock Multipacks - 6 Pack Dress Socks | Dynamocks
-  Designer Crew Socks 6 Pack - Unisex | Dynamocks
+  Geometric Cotton Crew Socks - Beam | Dynamocks
+  Beer Print Novelty Socks for Men | Dynamocks
+  Polka Dot Crew Socks for Men & Women | Dynamocks
+  Black & Grey Geometric Crew Socks | Dynamocks
+
 
 ## seo.description
 - Under 160 characters
