@@ -2,8 +2,10 @@
 
 **Author:** Anand Ghela
 **Date:** 7 August 2026
-**Status:** Design frozen. Code starts 8 August.
+**Status:** Design frozen 7 Aug. Reopened deliberately, as its own change, 16 Aug — see §3a and §13. Per `CLAUDE.md`: "If code and design disagree, the design wins — or the design gets changed first, deliberately, as its own commit." This edit is that rule in use, not a violation of it.
 **Supersedes:** `DESIGN.md` (v1, 4 Aug 2026)
+
+> **REVISED 2026-08-16 — read this before §3.** Two decisions changed the scope, both driven by the same question: *without moving Google's ranking, this exercise is revenue-neutral.* (1) `product.title` and `body_description` may now be **generated as candidates**, alongside `seo.title`/`seo.description`, in the same pass — so all four stay thematically consistent instead of drifting across separate runs. (2) They may **never be pushed** by `push.py` — that stays hard-coded, not just documented. See §3a for the full reasoning and §13 for the measurement gap this also exposed (Search Console).
 
 ---
 
@@ -43,20 +45,37 @@ The agent does not get permission. It gets promoted, and only against evidence.
 1. **Blast radius never widens with the level.** L3 is not "more products" — it is "fewer humans." Ten products per run is a permanent ceiling until there is a reason on paper to change it.
 2. **Demotion is automatic.** Any rollback drops the system one level. No discussion.
 3. **The undo log is written before the write, at every level, including manual.** An undo path that has never executed is not an undo path.
-4. **`product.title`, `price`, `status` and inventory are out of scope forever.** The business owner owns those. The system touches `seo.title` and `seo.description` only.
+4. **`price`, `status` and inventory are out of scope forever — for generation and for writing.** Not an SEO concern at any level.
+5. **`product.title` may be generated, never written — at every level, forever, with no promotion path.** This is not a level the autonomy ladder can climb past; it is a permanent wall. The business owner owns the H1 and applies any accepted suggestion herself, manually, outside this system. `push.py` refuses `field == 'product_title'` in code, not just in this sentence.
+6. **`body_description` may be generated as a grounded alignment edit, never written, until a dedicated review path exists for editing already-populated fields** (see §3a) — a lower wall than product.title, but still a wall today.
 
 > **Interview framing:** *"The agent's autonomy is a function of its measured track record, not of my confidence in it. I built the promotion criteria before I built the agent, because criteria written after the fact are just rationalisations."*
 
 ---
 
-## 3. Scope — what gets generated
+## 3. Scope — what gets generated, and what gets pushed
 
-| Field | Current state | In scope | Why |
-|-------|--------------|----------|-----|
-| `seo.title` | **null on ~99% of the catalog** | ✅ Primary target | An empty, uncontested slot. Writing it cannot destroy existing copy. Highest value, lowest risk — this is where to start. |
-| `seo.description` | Populated, but with **known duplicate clusters** | ✅ Secondary target | Duplicates across sibling products cause cannibalisation. Fixing them is measurable. |
-| `product.title` | Owner-managed, recently improved by hand | ❌ Out of scope | Brand voice belongs to the business owner. |
-| `price`, `status`, inventory | — | ❌ Out of scope, permanently | Not an SEO concern. Including them would make the blast radius unjustifiable. |
+**These are two different scopes now, not one.** Every field below can be *generated* (a candidate proposed for review) — whether it can also be *pushed* by `push.py` is a separate, stricter question. A field can be in the left scope without ever entering the right one.
+
+| Field | Current state | Generated? | Pushable by `push.py`? | Why |
+|-------|--------------|------------|-------------------------|-----|
+| `seo.title` | **null on ~99% of the catalog** | ✅ | ✅ | Empty, uncontested slot — writing it cannot destroy existing copy. Real but modest ranking signal (Google often overrides it from the H1 anyway). Highest value-per-risk field — this is where the write path started. |
+| `seo.description` | Populated, **known duplicate clusters** | ✅ | ✅ | Duplicates across siblings cause cannibalisation, fixable and measurable. **Does not move ranking** — Google has stated this directly. It moves click-through only. In push scope because the risk is low, not because it's the ranking lever. |
+| `product.title` (H1) | Owner-managed, recently improved by hand | ✅ **as of 2026-08-16** — generated together with the two rows above in the same pass, so all three stay thematically consistent instead of drifting across separate runs | ❌ **never — hard-coded refusal in `push.py`**, no promotion path, see §2 rule 5 | **The strongest single on-page ranking signal that exists.** Too high-value and too owner-sensitive to auto-write. Generated as a clearly-labelled suggestion in the review CSV; the business owner applies it herself in Shopify admin if she agrees. |
+| `body_description` (`descriptionHtml`) | Populated, good quality, but every product ends in a keyword-stuffed footer string (Anti-pattern G1 in `SEO-Field-Inventory.md`) | ✅ **as of 2026-08-16** — generated as a *grounded alignment edit* against the existing text, not a rewrite from scratch, so it stays consistent with the new title/description without inventing facts that aren't already there | ❌ not this cycle — editing a populated field is a different risk class than filling a null one; needs its own `verify.py` path before it can push | Real ranking signal (keyword depth, entity coverage) — but the near-term ask is narrower: strip the footer pattern, don't regenerate the whole thing. |
+| `price`, `status`, inventory | — | ❌ | ❌ never | Not an SEO concern at any level. Including them would make the blast radius unjustifiable. |
+
+**Collections are not yet in this table** because `generate.py` doesn't operate on the `collections` object yet — but per `SEO-Field-Inventory.md` §I, `collection.seo.title`/`collection.seo.description` on the 26 currently-null collections (`Best Sellers` 109 products, `Crew Pack of 1` 149, `Ankle Pack of 1` 92…) is the single highest-revenue-per-hour target in the whole inventory, because one collection write touches hundreds of products' category-level search visibility at once. **This is the next scope expansion after `push.py` and the first live batch on the table above — ahead of body-copy work, not behind it.**
+
+### 3a. Why the scope split, and why generate together — decided 2026-08-16
+
+The trigger question: *"without Google ranking, the whole exercise is futile."* True, and it exposed that the two fields already being pushed (`seo.title`, `seo.description`) are the safe, low-risk fields — not the fields that actually move rank. The real ranking levers are `product.title` (H1) and collection pages, and the plan can't just skip them without becoming revenue-theatre.
+
+The resolution keeps both truths intact rather than picking one:
+
+- **Generate all four fields together, one model call per product**, so `product.title`, `body_description`, `seo.title` and `seo.description` share the same theme and keywords. Generating them in separate, uncoordinated runs is how a product ends up with a title that says "geometric" and a description that says "striped" — the exact kind of drift the append-only `proposals` table was built to catch, not cause.
+- **Push only the two low-risk fields this cycle.** The higher-value fields (`product.title`, `body_description`) go into the review CSV, explicitly labelled as owner-executed suggestions, never a `push.py` write target — because the failure mode of an autonomous H1 rewrite (torching brand voice on a live revenue-generating store) is categorically worse than the failure mode of a bad `seo.description` (nobody notices).
+- **The guard lives in code, not just in this document.** `push.py` raises on `field == 'product_title'` regardless of what `proposals.status` says. A design-doc rule is a promise; a raised exception is a guarantee — the distinction `CLAUDE.md` already draws for the undo log applies here too.
 
 ---
 
@@ -239,10 +258,10 @@ Someone editing the store by hand between generation and push is not an edge cas
 | 1 | `db.py` | Schema and queries. Nothing else. | ❌ |
 | 2 | `fetch.py` | Shopify API → `products`. Stamps `store_updated_at`. | ❌ |
 | 3 | `prioritise.py` | Compute `priority_score` → `metrics`. No LLM. | ❌ |
-| 4 | `generate.py` | LLM call, forced schema → `proposals` | ❌ |
+| 4 | `generate.py` | LLM call, forced schema → `proposals`. **As of 2026-08-16, one call per product proposes up to 4 fields** (`seo_title`, `seo_description`, `product_title`, `body_description`) together, so they stay thematically consistent — see §3a. | ❌ |
 | 5 | `verify.py` | Uniqueness gate + rubric score → sets proposal status | ❌ |
-| 6 | `review.py` | `proposals` → CSV out; approved CSV → back in | ❌ |
-| 7 | `push.py` | Undo row first, then `productUpdate`, max 10, then re-read | ✅ **only this one** |
+| 6 | `review.py` | `proposals` → CSV out; approved CSV → back in. **CSV carries `product_title` and `body_description` as always-manual columns**, clearly labelled "apply yourself in Shopify — not pushed by this system." | ❌ |
+| 7 | `push.py` | Undo row first, then `productUpdate`, max 10, then re-read. **Hard-coded refusal on `field in ('product_title', 'body_description')`** — enforced in code, checked before the undo row is written, regardless of proposal status. | ✅ **only this one, and only `seo_title`/`seo_description`** |
 | — | `agent.py` | Chooses which step to run next | ❌ **L2+, not built yet** |
 
 **Three simplifications from the 7 Aug version, decided 11 Aug:**
@@ -314,6 +333,8 @@ Obtaining a labelled set is normally the hardest part of building an eval. Here 
 | Secrets leak | `.env` git-ignored; history audited 7 Aug — token has never been committed |
 | Silent model regression | `prompt_version` on every proposal; eval score recorded per proposal |
 | Runaway cost | Tokens and latency logged per run; one-line cost summary at the end |
+| **An AI-generated H1 or body rewrite gets applied without her actually reading it — a rubber stamp, not a review** *(added 2026-08-16)* | No code path exists for this to happen automatically — `push.py` refuses these fields in code. The only route from suggestion to live is her opening Shopify admin and typing it in herself. Slower by design; that friction is the control. |
+| **Shipping "SEO" that never gets measured against real search results** *(added 2026-08-16)* | See §13 — Search Console wiring moves up to right after the first live batch, not gated behind the eval gate. An unmeasured pipeline can't tell revenue-moving copy from copy that merely looks plausible. |
 
 ---
 
@@ -345,6 +366,51 @@ Obtaining a labelled set is normally the hardest part of building an eval. Here 
 **Rule that produced today's result: it ships in a booked session or it does not ship.** Homework record on this project is 0 for 10. Booked sessions are 8 for 8.
 
 **Cut line.** If time runs short, ship `fetch → prioritise → generate → verify` and demo it with `push.py` in dry run. A working read-and-propose pipeline with a safety gate beats a half-finished write path.
+
+---
+
+## 12a. Multimodal image grounding — decided 2026-08-17, build scheduled next session
+
+**The problem this closes:** text grounding alone (product name, tags, body copy) has a specific failure mode on this catalog — several product names (`Banger`, `MONO`, `TRIOS`) are internal codenames that describe nothing a shopper would search for, and the body copy describing the actual visual pattern may itself have been written in vocabulary shaped by an Indian design/ops process, not by an American shopper's search vocabulary. Text-only grounding inherits that translation gap. A photo does not — the model looking directly at the product sees what an American buyer would see and can describe it in the terms they'd actually search with.
+
+**What it is:** Gemini 2.5 Flash (already the model in `_call_gemini`) is multimodal — it accepts an image alongside the text prompt in the same call. Shopify's Admin API already exposes each product's image URL; it is not currently pulled into the local `products` mirror or the grounding set `get_products_needing_seo()` builds.
+
+**Grounding order, reversed from every prior version — decided 2026-08-17, this is the core design change, not a detail:**
+
+1. **The image is primary.** The first thing the model does is interpret the photo as an American consumer would — what pattern, color, motif, and style would a US shopper name if they saw this sock with no other information. That interpretation is the seed for both `seo.title` and `seo.description`.
+2. **Body copy and tags are secondary — cross-checks, not sources.** They confirm or correct the image interpretation (e.g., material facts a photo can't show, like "combed cotton"), but they do not lead it. Reasoning, stated plainly: the body copy and product name were written by people close to the product — possibly in vocabulary shaped by an Indian design/ops process — so treating text as primary re-imports the exact translation gap the image is meant to remove. The photo is the one grounding source with no vocabulary bias in either direction.
+3. **If image interpretation and text actively conflict** (photo shows stripes, tags say "polka dot"), that's a real data-quality flag — `needs_human`, not a coin flip on which source to trust.
+
+**Scope for the build session, not tonight:**
+1. Confirm `fetch.py` pulls at least one product image URL per product into `products` (add a column if it doesn't).
+2. `get_products_needing_seo()` returns the image URL alongside the existing fields.
+3. `_call_gemini()`'s request body changes shape to carry the image (bytes or URL, per Gemini's multimodal API format) alongside the text prompt — a real function change, not a prompt edit.
+4. `listing-v3.md` (new version, not an edit to v2) opens with the image-first instruction above, then folds in every rule already proven in v2 (American English, no pack-count noise, no invented gender, anti-template self-check) underneath it.
+5. Cost/latency check before running at catalog scale — deferred as a real question, not skipped, but not a blocker given the catalog size (~370 products, not tens of thousands).
+
+**Explicitly not required to close tonight's session:** `listing-v2.md`'s `needs_human` fallback (§ Grounding the visual descriptor) is the safeguard until this ships — text grounding that's too thin to trust stops and waits for a human rather than guessing. That's the correct fallback state to leave the pipeline in overnight.
+
+**A real limitation found during tonight's spike test, recorded before it's lost:** image grounding solves *what the pattern looks like* — it does not solve *what words a real shopper searches with*. Tested live on TRIOS's actual product photo: the image-grounded model correctly identified the pattern as geometric, but proposed `"Geometric Block Pattern Crew Socks"` — a phrase that stacks two overlapping descriptors ("geometric" already implies blocky shapes) into something a real searcher would never type. Compare against the store's own existing collection name, **"The Geometrics Collection"** (51 products, `SEO-Field-Inventory.md`) — a shorter, already-established term that's a better signal of the right vocabulary than the model's own guess.
+
+**Conclusion: image grounding and Search Console grounding (§13) are complementary, not substitutes.** The image tells the model what's true about the product. Real query data tells the model what words people actually use to search for it. `listing-v3.md`'s image-first instruction should NOT be trusted to also produce correct search vocabulary on its own — once §13 ships, the generation prompt needs a THIRD input alongside the image and the text fields: real high-impression query strings for that product or its category, so the model's word choice is checked against real search behavior, not just visual accuracy. Until §13 ships, treat image-grounded title/description output as a draft requiring a human vocabulary check, not a finished proposal — same `needs_human` discipline as the text-only gap above, for a different reason.
+
+---
+
+## 13. Phase 2 — grounding and measurement (decided 8/13, moved up in priority 8/16)
+
+**Not built. Not this cycle. Recorded here so the decision isn't lost — the mistake `Component 4` almost made twice.**
+
+**The problem this section exists to close:** every field in §3 can be generated, reviewed, and pushed correctly, and the exercise can still be revenue-neutral if nothing confirms it moved a real search result. `SEO-Field-Inventory.md` §I says it plainly: **none of this is provable without Google Search Console connected.**
+
+**Priority moved 2026-08-16:** originally sequenced after the eval gate (`verify.py` scoring) closes. Re-sequenced to **right after the first live `push.py` batch** instead — an eval score proves the copy is good; it does not prove anyone found the page. Those are different questions and the second one is the one revenue depends on.
+
+**What it is, when built:**
+
+- **Source is Google Search Console, not a keyword-volume tool** — real query data for `dynamocks.us`, free, with an API. It's Anand's own data (also a stronger interview story than a modelled third-party estimate).
+- **The queries that matter: high impressions, position 8–20.** Real demand, already showing up in results, losing the click before page one. That is precisely a title/description problem, and it names *which* products or collections to fix first — replacing "null seo.title" as the priority signal with "real people are already searching for this and not clicking."
+- **New table:** `keywords` (query, impressions, clicks, position, landing_page) + an ingest module. Matched to `products`/`collections` by landing-page URL. The generation prompt gets one new block: *"real search phrases that reached this page — use one where it truthfully fits."*
+- **Precedence rule, non-negotiable, same spirit as the anti-invention rule already in `CLAUDE.md`:** grounding beats keyword opportunity. If a query has 4,000 impressions and the product is cotton, the model does not use it just because the volume is attractive. Write it into the prompt explicitly, or the machine puts profitable lies on a live store.
+- **This is what finally answers "did it work?"** — before/after impressions and average position per URL, not a proposal count or an eval score. That is the number the business owner should see, not "N fields filled."
 
 ---
 
