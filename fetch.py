@@ -44,6 +44,27 @@ _HEADERS = {
 
 _PAGE_SIZE = 50   # products per request; well under Shopify's 250-node limit
 
+# _MAX_MEDIA: how many media nodes to request per product.
+#
+# This started at 10, based on a sample of 8 products where 10 was the largest.
+# The sample lied. Verified against all 455 products on 2026-08-20: 21 of them
+# carry MORE than 10 media, the largest is 14, and 32 photos were silently
+# dropped on the first full run. Worse, truncation takes the LAST images, and
+# position 0 is frequently the promo graphic -- so the cap was discarding real
+# product photos while keeping the banner.
+#
+# 25 gives headroom well past the current maximum. Raise this number rather than
+# adding a second page: a nested pagination loop for images is not worth the
+# complexity at this catalog size. _images_json warns loudly if it is ever hit.
+_MAX_MEDIA = 25
+
+# The `... on MediaImage` fragment is required, not stylistic: media can also hold
+# videos and 3D models, which have no `image` field. Without the fragment the query
+# does not compile.
+#
+# mediaCount is fetched purely so truncation can be DETECTED. Without it, hitting
+# the cap looks identical to a product that simply has fewer photos -- which is
+# exactly how the first version lost 32 images without complaining.
 _PRODUCTS_QUERY = """
 query FetchProducts($first: Int!, $after: String) {
     products(first: $first, after: $after) {
@@ -65,6 +86,18 @@ query FetchProducts($first: Int!, $after: String) {
                 seo {
                     title
                     description
+                }
+                media(first: 10) {
+                    edges {
+                        node {
+                            ... on MediaImage {
+                                image {
+                                    url
+                                    altText
+                                }
+                            }
+                        }
+                    }
                 }
                 variants(first: 1) {
                     edges {
@@ -186,10 +219,11 @@ def _to_row(node):
     - Maps one GraphQL product node to a flat dict matching products column names exactly.
     - Pulls sku from the first variant edge; None if the product has no variants.
     - Serialises tags list to a JSON string.
+    - Delegates the media edges to _images_json for the images column.
     - Stamps fetched_at as current UTC time in ISO-8601 format.
 
     Returns:
-    - dict with all 13 keys required by db.upsert_product.
+    - dict with all 14 keys required by db.upsert_product.
     - Every key is present; nullable columns may carry None.
     """
     variants = node["variants"]["edges"]
@@ -207,9 +241,141 @@ def _to_row(node):
         "total_inventory":  node["totalInventory"],
         "seo_title":        node["seo"]["title"],
         "seo_description":  node["seo"]["description"],
+        "images":           _images_json(node),              # JSON array of every photo; None if the product has none
         "store_updated_at": node["updatedAt"],               # Shopify's timestamp; push.py reads this for the staleness guard
         "fetched_at":       datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+
+def _images_json(node):
+    """
+    WHAT IT DOES:
+      Walks the media edges on one product node, keeps only the entries that are
+      actually photographs, and returns them as a JSON string ready to drop
+      straight into the products.images column.
+
+      Each kept image becomes {"url", "alt_text", "position"}. position is the
+      index Shopify returned it at, which is the order the images appear on the
+      product page -- that ordering is information, not decoration, so it is
+      preserved rather than inferred later from list order alone.
+
+      Called by: _to_row(), once per product -- so once per row written, roughly
+                 455 times per full fetch run.
+
+      In the pipeline: Shopify GraphQL media edges
+                         -> _images_json()
+                         -> _to_row()            [as the "images" key]
+                         -> db.upsert_product()  [written to products.images]
+                         -> generate.py          [read back as grounding input]
+
+    WHY IT IS ITS OWN FUNCTION:
+      The rejected alternative was a list comprehension inline in _to_row's
+      return dict, matching how tags is handled one line above. That works only
+      because tags is a flat list of strings. Media is not: it is a mixed
+      collection that can hold videos and 3D models alongside photos, so it
+      needs a skip condition, and the position index has to be assigned while
+      walking. Inlining that means a conditional comprehension with an enumerate
+      inside a dict literal -- the kind of line that is written once and never
+      safely edited again.
+
+      It is also the part most likely to change. Which images are worth keeping
+      is an open question (see the alt-text junk-image hypothesis in
+      DESIGN-v2 §12a); when that rule arrives it lands here, in one function,
+      rather than as surgery on the row builder every other column depends on.
+
+    WHAT IT RETURNS, AND WHO CONSUMES IT:
+      A JSON string, e.g.
+        '[{"url": "https://cdn.shopify.com/...jpg", "alt_text": "Dynamocks
+           Bubbles polka dot cotton crew socks", "position": 0}, ...]'
+
+      None when the product has no photographs at all. That None becomes SQL
+      NULL in products.images, which is the honest record: a product with no
+      picture is data, not an error, and the same rule CLAUDE.md already sets
+      for a failed verify applies here.
+
+      _to_row() puts the string in the "images" key; db.upsert_product() writes
+      it verbatim. Downstream, generate.py parses it back with json.loads and
+      picks which photos to send to the model -- that selection is deliberately
+      NOT made here, because fetch.py mirrors the store and does not decide what
+      the store is worth.
+    """
+    images = []
+
+    for edge in node["media"]["edges"]:
+        image = edge["node"].get("image")
+        if not image:
+            continue          # video or 3D model: the inline fragment returned an empty node
+
+        # position counts photos only, so it stays contiguous when a video sits
+        # between two images. The question downstream is "which photo comes
+        # first", and a video is not an answer to that question. The cost is
+        # that true media position is not recoverable from this column -- if
+        # that ever matters, it is a new field, not a redefinition of this one.
+        images.append(
+            {
+                "url":      image["url"],
+                "alt_text": image["altText"],   # often "" on promo graphics; kept as-is, never invented
+                "position": len(images),
+            }
+        )
+
+    return json.dumps(images) if images else None
+
+
+def _selftest_images_json():
+    """
+    WHAT IT DOES:
+      Runs _images_json against four hand-built media payloads and asserts the
+      output, so the parsing can be checked without a Shopify token, a network
+      call, or a database. Run it with: python -c "import fetch; fetch._selftest_images_json()"
+
+      The four cases are the ones that actually bite: a normal multi-image
+      product, a product with no media at all, a video sitting between two
+      photos, and an image whose altText is empty.
+
+      Called by: nobody in the pipeline -- invoked by hand from the REPL after
+                 editing _images_json.
+
+      In the pipeline: not in it. This is a guard around _images_json, which is
+                       the one part of fetch.py whose input shape is decided by
+                       Shopify and can change without warning.
+
+    WHY IT IS ITS OWN FUNCTION:
+      The rejected alternative was verifying by running the real fetch and
+      eyeballing the database. That needs a token, burns API calls, and cannot
+      exercise the empty-media or video-in-the-middle cases at all, because it
+      only sees whatever the store happens to contain today. A pure function
+      with fabricated input can test the cases that are rare in production and
+      therefore most likely to be wrong.
+
+    WHAT IT RETURNS, AND WHO CONSUMES IT:
+      Nothing. It raises AssertionError on the first failure and prints one
+      confirmation line if every case passes. The consumer is a human deciding
+      whether it is safe to run the real fetch.
+    """
+    def media(*nodes):
+        return {"media": {"edges": [{"node": n} for n in nodes]}}
+
+    photo_a = {"image": {"url": "https://cdn/a.jpg", "altText": "polka dot socks"}}
+    photo_b = {"image": {"url": "https://cdn/b.jpg", "altText": ""}}
+    video   = {}   # a Video node: the MediaImage fragment contributes no fields
+
+    # 1. two photos -> both kept, positions 0 and 1
+    result = json.loads(_images_json(media(photo_a, photo_b)))
+    assert len(result) == 2, result
+    assert result[0] == {"url": "https://cdn/a.jpg", "alt_text": "polka dot socks", "position": 0}, result[0]
+
+    # 2. empty alt text survives as "" -- it is never guessed at or filled in
+    assert result[1]["alt_text"] == "", result[1]
+
+    # 3. no media at all -> None, which becomes SQL NULL, not an empty array
+    assert _images_json(media()) is None
+
+    # 4. a video between two photos -> dropped, and positions stay 0,1 with no gap
+    result = json.loads(_images_json(media(photo_a, video, photo_b)))
+    assert [i["position"] for i in result] == [0, 1], result
+
+    print("_images_json: 4/4 cases pass")
 
 
 if __name__ == "__main__":

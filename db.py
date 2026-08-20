@@ -23,9 +23,17 @@ CREATE TABLE IF NOT EXISTS products
     total_inventory    INTEGER,            -- sum of stock across all variants and locations
     seo_title          TEXT,               -- NULL on ~99% of the catalog today — primary target
     seo_description    TEXT,               -- may contain known duplicate clusters — secondary target
+    images             TEXT,               -- JSON array of {url, alt_text, position}; NULL if no media
     store_updated_at   TEXT NOT NULL,      -- Shopify's updatedAt; drives the staleness guard in push.py
     fetched_at         TEXT NOT NULL       -- ISO-8601 UTC timestamp of the most recent fetch run
 );
+
+-- images holds EVERY product photo, not the featured one. Verified live 2026-08-20:
+-- products carry 6-10 images and image #1 is frequently a promo graphic rather than
+-- the sock (Allure #1 is a "Buy One Get One Free" Instagram post). Storing only the
+-- first would ground the generator on a sale banner. Which images actually reach the
+-- model is a cost decision that belongs in generate.py, not here -- fetch mirrors the
+-- store, it does not choose. Same layering rule the unreachable-catalog bug broke.
 
 -- metrics: prioritisation inputs sourced from the Shopify sales_by_product export.
 CREATE TABLE IF NOT EXISTS metrics
@@ -91,13 +99,13 @@ _UPSERT_PRODUCT = """
 INSERT INTO products
 (
     gid, handle, sku, title, product_type, vendor, tags,
-    status, total_inventory, seo_title, seo_description,
+    status, total_inventory, seo_title, seo_description, images,
     store_updated_at, fetched_at
 )
 VALUES
 (
     :gid, :handle, :sku, :title, :product_type, :vendor, :tags,
-    :status, :total_inventory, :seo_title, :seo_description,
+    :status, :total_inventory, :seo_title, :seo_description, :images,
     :store_updated_at, :fetched_at
 )
 ON CONFLICT(gid) DO UPDATE SET    -- gid already exists: overwrite every column with fresh store data
@@ -111,6 +119,7 @@ ON CONFLICT(gid) DO UPDATE SET    -- gid already exists: overwrite every column 
     total_inventory  = excluded.total_inventory,
     seo_title        = excluded.seo_title,
     seo_description  = excluded.seo_description,
+    images           = excluded.images,
     store_updated_at = excluded.store_updated_at,
     fetched_at       = excluded.fetched_at    -- excluded.* refers to the values that lost the conflict
 """
