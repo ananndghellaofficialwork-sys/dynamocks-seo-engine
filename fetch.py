@@ -87,7 +87,10 @@ query FetchProducts($first: Int!, $after: String) {
                     title
                     description
                 }
-                media(first: 10) {
+                mediaCount {
+                    count
+                }
+                media(first: __MAX_MEDIA__) {
                     edges {
                         node {
                             ... on MediaImage {
@@ -110,7 +113,9 @@ query FetchProducts($first: Int!, $after: String) {
         }
     }
 }
-"""
+""".replace("__MAX_MEDIA__", str(_MAX_MEDIA))
+# Substituted rather than f-stringed: the query is full of GraphQL braces, and an
+# f-string would require doubling every one of them. One token, one replace.
 
 
 def main():
@@ -299,9 +304,22 @@ def _images_json(node):
       NOT made here, because fetch.py mirrors the store and does not decide what
       the store is worth.
     """
+    edges = node["media"]["edges"]
+
+    # Truncation check. A short page and a genuinely small product look identical
+    # in the response, so the only honest test is: did we come back holding
+    # exactly the cap, while the store says there is more? Print rather than
+    # raise -- a lost photo is a degraded input, not a corrupt one, and aborting
+    # a 455-product fetch over it would be the wrong trade.
+    if len(edges) == _MAX_MEDIA and node["mediaCount"]["count"] > _MAX_MEDIA:
+        print(
+            f"  WARNING truncated: {node['title'][:50]} has "
+            f"{node['mediaCount']['count']} media, kept {_MAX_MEDIA} -- raise _MAX_MEDIA"
+        )
+
     images = []
 
-    for edge in node["media"]["edges"]:
+    for edge in edges:
         image = edge["node"].get("image")
         if not image:
             continue          # video or 3D model: the inline fragment returned an empty node
@@ -353,8 +371,12 @@ def _selftest_images_json():
       confirmation line if every case passes. The consumer is a human deciding
       whether it is safe to run the real fetch.
     """
-    def media(*nodes):
-        return {"media": {"edges": [{"node": n} for n in nodes]}}
+    def media(*nodes, total=None):
+        return {
+            "title": "test product",
+            "mediaCount": {"count": total if total is not None else len(nodes)},
+            "media": {"edges": [{"node": n} for n in nodes]},
+        }
 
     photo_a = {"image": {"url": "https://cdn/a.jpg", "altText": "polka dot socks"}}
     photo_b = {"image": {"url": "https://cdn/b.jpg", "altText": ""}}
@@ -375,7 +397,24 @@ def _selftest_images_json():
     result = json.loads(_images_json(media(photo_a, video, photo_b)))
     assert [i["position"] for i in result] == [0, 1], result
 
-    print("_images_json: 4/4 cases pass")
+    # 5. hitting the cap while the store holds more must WARN, not pass silently.
+    #    This is the case that shipped broken on 2026-08-20 and cost 32 photos:
+    #    the old code had no way to tell a full page from a small product.
+    capped = media(*([photo_a] * _MAX_MEDIA), total=_MAX_MEDIA + 4)
+    import io, contextlib
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        _images_json(capped)
+    assert "truncated" in buffer.getvalue(), "cap was hit silently -- the 8/20 bug is back"
+
+    # 6. and the mirror image: exactly at the cap with nothing left behind is
+    #    NOT truncation and must stay quiet, or the warning becomes noise.
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        _images_json(media(*([photo_a] * _MAX_MEDIA)))
+    assert buffer.getvalue() == "", buffer.getvalue()
+
+    print("_images_json: 6/6 cases pass")
 
 
 if __name__ == "__main__":
