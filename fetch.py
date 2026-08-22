@@ -23,6 +23,7 @@
 import datetime
 import json
 import os
+import re  # fibre-composition extraction in _material()
 
 import requests
 from dotenv import load_dotenv
@@ -87,6 +88,7 @@ query FetchProducts($first: Int!, $after: String) {
                     title
                     description
                 }
+                descriptionHtml
                 mediaCount {
                     count
                 }
@@ -138,6 +140,11 @@ def main():
     conn = db.connect()          # opens seo.db with row_factory and FK enforcement on
     db.init_schema(conn)         # creates tables if this is a first run; no-op otherwise
 
+    # Captured BEFORE the first page. Any row still carrying a fetched_at older
+    # than this once the run finishes was not returned by the store, which is
+    # the only evidence available that a product has been deleted.
+    run_started = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     cursor = None
     page = 0
 
@@ -151,7 +158,17 @@ def main():
         if not has_next:
             break
 
-    print(f"done — {db.count_products(conn)} products in db")
+    # Only safe once every page has landed. Reconciling after a partial run
+    # would read a network failure as "the owner deleted 300 products".
+    gone, back = db.reconcile_delisted(conn, run_started)
+    conn.commit()
+
+    live = db.count_products(conn, include_delisted=False)
+    print(f"done — {live} live products in db")
+    if gone:
+        print(f"       {gone} product(s) no longer in the store — marked delisted, rows kept")
+    if back:
+        print(f"       {back} product(s) reappeared — mark cleared")
     conn.close()
 
 
@@ -247,6 +264,8 @@ def _to_row(node):
         "seo_title":        node["seo"]["title"],
         "seo_description":  node["seo"]["description"],
         "images":           _images_json(node),              # JSON array of every photo; None if the product has none
+        "body_html":        node["descriptionHtml"],
+        "material":         _material(node["descriptionHtml"]),
         "store_updated_at": node["updatedAt"],               # Shopify's timestamp; push.py reads this for the staleness guard
         "fetched_at":       datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -338,6 +357,107 @@ def _images_json(node):
         )
 
     return json.dumps(images) if images else None
+
+
+# Matched against a KNOWN FIBRE VOCABULARY rather than "a percentage followed
+# by some words". The open-ended version read "2% Elastic</span><br>Imported"
+# as a fibre called "Elastic Imported", because stripping the tags turned the
+# line break into a space and there was no longer a boundary to stop at.
+#
+# A closed vocabulary cannot do that. It also cannot be fooled by "Save 20%
+# today", and a fibre this store starts using that is not on the list produces
+# None -- which is the safe direction, since None forbids any material claim
+# rather than inventing one.
+_FIBRE = re.compile(
+    r"(\d{1,3})\s*%\s*"
+    r"((?:combed|organic|recycled|premium|merino)?\s*"
+    r"(?:cotton|bamboo|spandex|elastane|elastic|nylon|polyester|wool|modal|"
+    r"acrylic|viscose|rayon|lycra|silk|linen|cashmere)"
+    r"(?:\s+blend)?)",
+    re.IGNORECASE,
+)
+
+
+def _material(body_html):
+    """
+    WHAT IT DOES:
+      Pulls the fibre composition out of a product's body copy — the
+      "85% Combed Cotton, 13% Spandex, 2% Elastic" line — and returns it as one
+      normalised string.
+
+      Called by: _to_row(), once per product.
+
+      In the pipeline: Shopify descriptionHtml
+                         -> _material()
+                         -> products.material
+                         -> build_message()   [the only material the model sees]
+
+    WHY IT IS ITS OWN FUNCTION:
+      The rejected alternative was passing the whole body_html to the model and
+      letting it find the composition. That is what has effectively been
+      happening through seo_description, and it produced the defect this
+      function exists to close: the Artistic Expression Pack is 75% polyester
+      and its marketing copy calls it "a cotton-rich blend". A model handed both
+      will believe the sentence, not the numbers.
+
+      Extracting here means the model receives percentages it cannot argue
+      with, and a product whose body copy states no composition returns None
+      rather than an invented one -- which is the whole point.
+
+    WHAT IT RETURNS, AND WHO CONSUMES IT:
+      A string like "85% Combed Cotton, 13% Spandex, 2% Elastic", or None when
+      the body copy states no percentages at all.
+
+      None matters: it tells build_message to send "(not stated)" so the prompt
+      can forbid any material claim for that product. A guessed fibre on a live
+      listing is a returns problem, not a copy problem.
+    """
+    if not body_html:
+        return None
+
+    # Tags stripped first so "<li>85% Bamboo" and "85% Bamboo" read alike, and
+    # so a percentage inside an attribute cannot be mistaken for a fibre.
+    text = re.sub(r"<[^>]+>", " ", body_html)
+    text = re.sub(r"\s+", " ", text)
+
+    parts = []
+    seen = set()
+    for percent, fibre in _FIBRE.findall(text):
+        fibre = " ".join(fibre.split()).title()
+        # First mention of a fibre wins. The same composition is often repeated
+        # in a features list further down, and a doubled entry reads as though
+        # the sock is 170% cotton.
+        if fibre.lower() in seen:
+            continue
+        seen.add(fibre.lower())
+        parts.append(f"{percent}% {fibre}")
+
+    # One stray percentage is a discount or a claim, not a composition.
+    return ", ".join(parts) if len(parts) >= 2 else None
+
+
+def _selftest_material():
+    """Runs _material against real body copy from this store. No network needed."""
+    cases = [
+        ("<span>85% Combed Cotton,13% Spandex, 2% Elastic</span><br>Imported",
+         "85% Combed Cotton, 13% Spandex, 2% Elastic"),
+        ("<li><p>75% Polyester Blend, 8% Elastic, 15% Spandex, 2% Nylon – a perfect blend</p></li>",
+         "75% Polyester Blend, 8% Elastic, 15% Spandex, 2% Nylon"),
+        ("<li>Material Composition: 85% Bamboo, 12% Spandex, 3% Elastic.</li>",
+         "85% Bamboo, 12% Spandex, 3% Elastic"),
+        ("<p>The 85% combed cotton stays breathable, while 13% spandex and 2% elastic hold a fit.</p>",
+         "85% Combed Cotton, 13% Spandex, 2% Elastic"),
+        # No composition stated anywhere -> None, never a guess.
+        ("<p>Soft combed cotton, breathable and easy on the skin.</p>", None),
+        ("", None),
+        (None, None),
+        # A lone percentage is a discount, not a fibre.
+        ("<p>Save 20% today on all crew socks.</p>", None),
+    ]
+    for body, expected in cases:
+        got = _material(body)
+        assert got == expected, f"\n  in : {str(body)[:60]}\n  got: {got}\n  want: {expected}"
+    print("_material: 8/8 cases pass")
 
 
 def _selftest_images_json():

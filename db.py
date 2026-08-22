@@ -1,3 +1,4 @@
+import datetime  # UTC timestamps for exclusion rows
 import sqlite3  # standard library database adapter — no pip install needed
 from pathlib import Path  # portable path handling; avoids raw string concatenation
 
@@ -24,9 +25,23 @@ CREATE TABLE IF NOT EXISTS products
     seo_title          TEXT,               -- NULL on ~99% of the catalog today — primary target
     seo_description    TEXT,               -- may contain known duplicate clusters — secondary target
     images             TEXT,               -- JSON array of {url, alt_text, position}; NULL if no media
+    body_html          TEXT,               -- descriptionHtml, the on-page copy
+    material           TEXT,               -- fibre composition extracted from body_html; NULL if absent
     store_updated_at   TEXT NOT NULL,      -- Shopify's updatedAt; drives the staleness guard in push.py
-    fetched_at         TEXT NOT NULL       -- ISO-8601 UTC timestamp of the most recent fetch run
+    fetched_at         TEXT NOT NULL,      -- ISO-8601 UTC timestamp of the most recent fetch run
+    delisted_at        TEXT                -- set when a fetch no longer finds this product; NULL = live
 );
+
+-- delisted_at exists because the row cannot simply be deleted. proposals,
+-- pushes, scores and seo_exclusions all reference products(gid), and pushes is
+-- the undo log for real writes to a live store -- deleting the product would
+-- either fail the foreign key or destroy the record of what was written and
+-- how to reverse it. Marking keeps the audit trail intact and takes the
+-- product out of every work queue, which is the actual requirement.
+--
+-- It is NOT written by upsert_product. A fetch that finds a product refreshes
+-- every mirrored column; whether a product is GONE is decided by absence from
+-- the whole run, which no per-row upsert can see.
 
 -- images holds EVERY product photo, not the featured one. Verified live 2026-08-20:
 -- products carry 6-10 images and image #1 is frequently a promo graphic rather than
@@ -56,6 +71,7 @@ CREATE TABLE IF NOT EXISTS proposals
     model              TEXT NOT NULL,           -- model ID used, e.g. 'claude-opus-4-8'
     prompt_version     TEXT NOT NULL,           -- version tag; ties a regression to a specific prompt
     created_at         TEXT NOT NULL,           -- ISO-8601 UTC timestamp of generation
+    grounding          TEXT,                    -- the model's stated reasoning; see note below
     uniqueness_status  TEXT,                    -- 'pass' | 'fail' | 'not_checked'
     max_similarity     REAL,                    -- cosine similarity vs nearest neighbour in embeddings
     nearest_gid        TEXT,                    -- gid of the product it collided with, if any
@@ -64,6 +80,21 @@ CREATE TABLE IF NOT EXISTS proposals
     reviewer_note      TEXT,                    -- free-text note from the business owner
     superseded_by      INTEGER                  -- points at the retry proposal id, if any
 );
+
+-- grounding holds what the model said it saw and what it rejected, captured
+-- from listing-v3.md's first output line. Stored per proposal, and duplicated
+-- across the seo_title and seo_description rows of the same product, because
+-- one call produced both and a row that cannot explain itself alone is no use
+-- to a reviewer reading a CSV.
+--
+-- The reason it is worth a column: a wrong title and a right title look
+-- identical in review. "Geometric Print Crew Socks" is correct copy if the
+-- sock has triangles on it and an invention if the model read a sale banner.
+-- Only the reasoning separates the two, and asking the model again later gets
+-- a fresh rationalisation rather than the one that actually produced this row.
+--
+-- NULL on anything generated with v1 or v2 — those prompts never asked for it.
+-- That NULL is honest: it means nobody knows why that copy was written.
 
 -- pushes: the undo log. One row per live write. Written BEFORE the write happens.
 CREATE TABLE IF NOT EXISTS pushes
@@ -90,6 +121,94 @@ CREATE TABLE IF NOT EXISTS embeddings
     computed_at        TEXT NOT NULL,           -- ISO-8601 UTC timestamp
     PRIMARY KEY (gid, field)                    -- one vector per (product, field) pair
 );
+
+-- seo_exclusions: products the generator must never spend a paid call on.
+--
+-- A TABLE and not a column on products, because products is a disposable
+-- mirror -- upsert_product overwrites every one of its columns from live store
+-- data on each fetch, so a flag written there would survive exactly until the
+-- next run. This sits outside the mirror, like proposals and pushes do.
+--
+-- A ROW PER PRODUCT and not a rule in generate.py's WHERE clause, because the
+-- reason is worth keeping: six months from now "why does this product have no
+-- SEO proposal" should be answerable by a query, not by reading a commit
+-- history. It also allows excluding a one-off product without inventing a
+-- category rule to justify it.
+CREATE TABLE IF NOT EXISTS seo_exclusions
+(
+    gid                TEXT PRIMARY KEY REFERENCES products(gid),
+    reason             TEXT NOT NULL,           -- free text; why this product is out
+    excluded_at        TEXT NOT NULL            -- ISO-8601 UTC timestamp
+);
+
+-- keywords: what people actually type. The demand side of the pipeline.
+--
+-- Everything before this table describes what a product IS — its photo, its
+-- fibre, its pattern. None of it says what a shopper TYPES, and those are
+-- different things: "Geometric Block Pattern Crew Socks" was accurate and
+-- unsearchable. This table is the other half.
+--
+-- source is not decoration. The three feeds answer different questions and are
+-- trusted differently:
+--   gsc_query  real Google queries WITH impressions and position. The only
+--              source with volume attached. Blind to anything not already
+--              ranking — which is why it showed 58 impressions for "dress"
+--              while dress socks are the top-selling line.
+--   gsc_page   impressions and position PER URL. Not a query; a priority
+--              signal saying which pages already rank and are losing the click.
+--   onsite     Shopify's own search box. Real intent from people already on
+--              the store, including demand for things not stocked.
+--   autocomplete  Google's suggestions. NO VOLUME — proves a phrase exists,
+--              not that it is worth a title. Ranked last, used to find the
+--              phrasings the other two cannot see.
+CREATE TABLE IF NOT EXISTS keywords
+(
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    source             TEXT NOT NULL,           -- gsc_query | gsc_page | onsite | autocomplete
+    query              TEXT,                    -- the search phrase; NULL for gsc_page rows
+    landing_page       TEXT,                    -- the URL; NULL for query-only rows
+    impressions        INTEGER,
+    clicks             INTEGER,
+    position           REAL,
+    captured_at        TEXT NOT NULL
+);
+
+-- scores: what an independent judge model thought of a piece of generated copy.
+--
+-- APPEND-ONLY, like proposals. A re-score is a new row, never an edit. The
+-- point of keeping the old number is that when a prompt change moves a product
+-- from 2 to 5, both numbers have to still exist for that to be visible.
+--
+-- proposal_id is NULLABLE on purpose. A NULL means the copy was never saved as
+-- a proposal -- an experiment, like the image-vs-text spike -- and a real id
+-- means this scored something that is a genuine push candidate. Both belong in
+-- one table because the question "show me the worst copy we have produced" is
+-- the same question either way.
+--
+-- accuracy and search are stored SEPARATELY and never averaged here. A title
+-- can be perfectly true and still be a phrase nobody searches for; collapsing
+-- the two into one number is exactly how that failure hides.
+--
+-- judge_model is recorded because the score is only meaningful relative to who
+-- gave it. CLAUDE.md: scores come from a model outside the generating set --
+-- this column is what makes that rule checkable after the fact rather than
+-- merely asserted.
+CREATE TABLE IF NOT EXISTS scores
+(
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id        INTEGER REFERENCES proposals(id),  -- NULL for experiments
+    gid                TEXT NOT NULL REFERENCES products(gid),
+    run_label          TEXT NOT NULL,           -- which experiment or eval run
+    arm                TEXT,                    -- e.g. 'text-only' | 'image+text'
+    seo_title          TEXT,                    -- the copy as scored, so the row
+    seo_description    TEXT,                    --   stands alone without a join
+    accuracy           INTEGER,                 -- 0-5, grounded in the real product
+    search             INTEGER,                 -- 0-5, would a shopper type this
+    won                INTEGER,                 -- 1 if the judge preferred this arm
+    reason             TEXT,                    -- the judge's one-line why
+    judge_model        TEXT NOT NULL,
+    scored_at          TEXT NOT NULL            -- ISO-8601 UTC timestamp
+);
 """
 
 # _UPSERT_PRODUCT: parameterised INSERT ... ON CONFLICT used by upsert_product().
@@ -100,13 +219,13 @@ INSERT INTO products
 (
     gid, handle, sku, title, product_type, vendor, tags,
     status, total_inventory, seo_title, seo_description, images,
-    store_updated_at, fetched_at
+    body_html, material, store_updated_at, fetched_at
 )
 VALUES
 (
     :gid, :handle, :sku, :title, :product_type, :vendor, :tags,
     :status, :total_inventory, :seo_title, :seo_description, :images,
-    :store_updated_at, :fetched_at
+    :body_html, :material, :store_updated_at, :fetched_at
 )
 ON CONFLICT(gid) DO UPDATE SET    -- gid already exists: overwrite every column with fresh store data
     handle           = excluded.handle,
@@ -120,6 +239,8 @@ ON CONFLICT(gid) DO UPDATE SET    -- gid already exists: overwrite every column 
     seo_title        = excluded.seo_title,
     seo_description  = excluded.seo_description,
     images           = excluded.images,
+    body_html        = excluded.body_html,
+    material         = excluded.material,
     store_updated_at = excluded.store_updated_at,
     fetched_at       = excluded.fetched_at    -- excluded.* refers to the values that lost the conflict
 """
@@ -249,8 +370,191 @@ def upsert_product(conn: sqlite3.Connection, row: dict) -> None:
 #
 # Called by: fetch.py — after conn.commit(), to print the final loaded row count.
 # ─────────────────────────────────────────────────────────────────────────────
-def count_products(conn: sqlite3.Connection) -> int:
+# ─────────────────────────────────────────────────────────────────────────────
+# reconcile_delisted(conn, run_started)
+#
+# WHY:
+#   fetch.py upserts. An upsert can add and it can update, but it can never
+#   notice an absence — so when the owner deletes 80 products from the store,
+#   the local mirror keeps all 80 forever and the generator happily writes SEO
+#   copy for listings that no longer exist. The bug is silent, which is the
+#   worst kind: every count still looks right.
+#
+#   The rejected alternative was deleting seo.db and re-fetching. That works on
+#   products and destroys everything else — proposals, scores, seo_exclusions,
+#   and pushes, which is the undo log for real writes already made to a live
+#   store. Rebuilding the mirror must not cost the audit trail.
+#
+#   Detection is by timestamp rather than by comparing gid lists. Every upsert
+#   stamps fetched_at with the current time, so any row still carrying a
+#   timestamp older than the run start was not returned by the store this time.
+#   That needs no in-memory set of 455 ids and no SQL parameter limit to worry
+#   about as the catalog grows.
+#
+# WHAT IT DOES:
+#   Two updates. Marks rows the run did not touch as delisted. Clears the mark
+#   on any row the run DID touch — a product restored in Shopify comes back to
+#   life here rather than staying dead because it was gone once.
+#   Does NOT commit; the caller owns the transaction.
+#
+# RETURNS:
+#   A tuple (newly_delisted, restored) of ints, for the operator to read. Both
+#   zero on a normal run where nothing changed in the store.
+#
+# Called by: fetch.py — once per run, after the final page commits.
+# ─────────────────────────────────────────────────────────────────────────────
+def reconcile_delisted(conn: sqlite3.Connection, run_started: str) -> tuple[int, int]:
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    gone = conn.execute(
+        """
+        UPDATE products
+        SET delisted_at = :now
+        WHERE fetched_at < :run_started
+          AND delisted_at IS NULL
+        """,
+        {"now": now, "run_started": run_started},
+    ).rowcount
+
+    back = conn.execute(
+        """
+        UPDATE products
+        SET delisted_at = NULL
+        WHERE fetched_at >= :run_started
+          AND delisted_at IS NOT NULL
+        """,
+        {"run_started": run_started},
+    ).rowcount
+
+    return gone, back
+
+
+def count_products(conn: sqlite3.Connection, include_delisted: bool = True) -> int:
+    # Defaults to counting everything so existing callers keep their old
+    # meaning. fetch.py passes False, because after a reconcile the number an
+    # operator actually wants is how many products still exist in the store.
+    where = "" if include_delisted else " WHERE delisted_at IS NULL"
     result = conn.execute(
-        "SELECT COUNT(*) FROM products"
+        f"SELECT COUNT(*) FROM products{where}"
     ).fetchone()  # single-row result from the aggregate
     return result[0]  # index 0 is the COUNT(*) integer
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# exclude_from_seo(conn, gid, reason)
+#
+# WHY:
+#   Some products must never reach the generator — today the Invisibles / No
+#   Show line, which is being discontinued, so any copy written for it is a
+#   paid API call spent on a listing that will not exist. The alternative was
+#   a condition inside get_products_needing_seo's WHERE clause. That works
+#   until the second reason arrives, at which point the queue definition
+#   becomes a growing list of special cases and nobody can answer "why is this
+#   product excluded" without reading SQL. A row with a reason answers it.
+#
+# WHAT IT DOES:
+#   Inserts one exclusion row, or overwrites the reason and timestamp if the
+#   product is already excluded — re-running the seeding script is therefore
+#   safe and idempotent. Does NOT commit; the caller owns the transaction, the
+#   same contract upsert_product follows.
+#
+#   Note this is NOT append-only. proposals is append-only because it is an
+#   audit trail of what the AI proposed; this is a live policy list, and
+#   "which products are excluded right now" is the question it has to answer.
+#
+# RETURNS:
+#   Nothing (None). Side effect: one row staged in the open transaction.
+#
+# Called by: exclude_noshow.py, once per excluded product.
+# ─────────────────────────────────────────────────────────────────────────────
+def exclude_from_seo(conn: sqlite3.Connection, gid: str, reason: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO seo_exclusions
+        (
+            gid, reason, excluded_at
+        )
+        VALUES
+        (
+            :gid, :reason, :excluded_at
+        )
+        ON CONFLICT(gid) DO UPDATE SET
+            reason      = excluded.reason,
+            excluded_at = excluded.excluded_at
+        """,
+        {
+            "gid": gid,
+            "reason": reason,
+            "excluded_at": datetime.datetime.now(datetime.timezone.utc)
+                                   .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# save_score(conn, row)
+#
+# WHY:
+#   A judge's verdict that is only printed to a terminal is gone the moment the
+#   window closes, which makes "come back later for the products that scored
+#   badly" impossible to answer without re-running and re-paying for every
+#   score. Writing it down turns a one-off opinion into a queryable backlog.
+#
+#   The rejected alternative was storing the judge's raw reply text in one
+#   column. That reads fine and cannot be sorted — and sorting is the entire
+#   point, because the only useful question is "which are the worst". Parsing
+#   at write time, once, beats parsing at read time, every time.
+#
+# WHAT IT DOES:
+#   Inserts one row per scored candidate. Append-only: there is no ON CONFLICT
+#   clause, no UPDATE path, and re-scoring the same copy deliberately produces
+#   a second row so the change is visible. Does NOT commit; the caller owns the
+#   transaction.
+#
+#   accuracy, search and won may all be None. A judge that returned an
+#   unparseable reply still gets a row, holding the raw reason — because "the
+#   judge failed on this product" is itself a finding, and a silently missing
+#   row would look identical to a product that was never scored.
+#
+# RETURNS:
+#   The new row's id (int), so a caller scoring two arms can relate them if it
+#   ever needs to.
+#
+# Called by: spike_images.py today, once per arm per product. verify.py later,
+#            once per proposal — the eval gate in DESIGN-v2 Component 6.
+# ─────────────────────────────────────────────────────────────────────────────
+def save_score(conn: sqlite3.Connection, row: dict) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO scores
+        (
+            proposal_id, gid, run_label, arm,
+            seo_title, seo_description,
+            accuracy, search, won, reason,
+            judge_model, scored_at
+        )
+        VALUES
+        (
+            :proposal_id, :gid, :run_label, :arm,
+            :seo_title, :seo_description,
+            :accuracy, :search, :won, :reason,
+            :judge_model, :scored_at
+        )
+        """,
+        {
+            "proposal_id": row.get("proposal_id"),
+            "gid": row["gid"],
+            "run_label": row["run_label"],
+            "arm": row.get("arm"),
+            "seo_title": row.get("seo_title"),
+            "seo_description": row.get("seo_description"),
+            "accuracy": row.get("accuracy"),
+            "search": row.get("search"),
+            "won": row.get("won"),
+            "reason": row.get("reason"),
+            "judge_model": row["judge_model"],
+            "scored_at": datetime.datetime.now(datetime.timezone.utc)
+                                 .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    )
+    return cursor.lastrowid

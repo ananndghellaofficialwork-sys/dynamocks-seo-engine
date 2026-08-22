@@ -1,0 +1,66 @@
+# Google autocomplete, collected 2026-08-21. No volume attached — these prove a
+# phrase exists, not that it is worth a title. Retailer names and "near me"
+# suggestions are excluded: they are navigational and nothing this store writes
+# will win them.
+
+# --- dress, the revenue segment ---
+men's dress socks
+mens dress socks size 13-15
+mens dress socks that stay up
+men's dress socks fun
+striped dress socks
+striped dress socks men
+striped dress socks women
+striped mens socks cotton
+vertical striped dress socks
+blue striped dress socks
+mens dress sock gift box
+
+# --- over the calf, the product gap ---
+over the calf socks
+over the calf socks for men
+over the calf socks for women
+over the calf socks that stay up
+over the calf socks vs crew socks
+
+# --- casual / novelty ---
+colorful socks for men
+cool socks for men
+funky socks
+funky socks for men
+funky socks for women
+funky socks brand
+funky socks brand for men
+funky socks compression
+novelty socks men
+funny socks men
+fun socks men
+
+# --- designer ---
+designer socks men
+designer socks mens white
+designer socks men black
+designer socks men pack
+designer men's socks gift box
+
+# --- gift ---
+sock gift box men
+sock gift set men
+socks gift pack men
+sock gift ideas
+
+# --- crew ---
+cotton crew socks
+cotton crew socks womens
+cotton crew socks for men
+cotton crew socks white
+cotton crew socks black
+
+# --- bamboo: the demand is health and comfort, not sustainability ---
+bamboo socks
+bamboo socks for men
+bamboo socks for women
+bamboo socks benefits
+bamboo socks for neuropathy
+bamboo socks compression
+bamboo socks reviews
