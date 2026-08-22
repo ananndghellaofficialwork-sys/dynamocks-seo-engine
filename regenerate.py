@@ -27,6 +27,7 @@ import sys
 
 import db
 import generate
+import keywords
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "duplicates"
 WRITE = "--write" in sys.argv
@@ -218,6 +219,12 @@ conn.commit()
 print(f"retired {len(old_ids)} old proposal rows")
 
 prompt_text, version_tag = generate.load_prompt(VERSION)
+
+# Same rule as generate_for_products: loaded once, not per product, because
+# it is the cached prefix of every message this run sends.
+use_keywords = version_tag == "v6"
+vocab = keywords.vocabulary(conn, limit=60) if use_keywords else None
+
 succeeded = 0
 failed = 0
 refused = 0
@@ -241,7 +248,9 @@ for index, gid in enumerate(gids):
         # A note the owner typed in resolve.py outranks everything and must
         # survive regeneration, or the same question gets asked again.
         note = generate.owner_note_for(conn, gid)
-        message = generate.build_message(product, prompt_text, taken, owner_note=note)
+        rank = keywords.page_rank_for(conn, product["handle"]) if use_keywords else None
+        message = generate.build_message(product, prompt_text, taken, owner_note=note,
+                                         vocab=vocab, page_rank=rank)
         images = generate.fetch_image_parts(product["images"])
         fields = generate.parse_response(
             generate.call_model(message, MODEL, images)
@@ -265,12 +274,18 @@ for index, gid in enumerate(gids):
             continue
 
         written = []
-        for field in ("seo_title", "seo_description"):
+        # product_title joins seo_title/seo_description here for the same
+        # reason it does in generate_for_products: all three come out of one
+        # model call reading one set of photographs, and saving it separately
+        # is how a page ends up with an H1 and a meta title that disagree.
+        for field in ("seo_title", "seo_description", "product_title"):
             if not fields[field]:
                 print(f"  ! {product['handle']} — {field} MISSING")
                 continue
             generate.save_proposal(
-                conn, gid=gid, field=field, current_value=product[field],
+                conn, gid=gid, field=field,
+                current_value=(product["title"] if field == "product_title"
+                               else product[field]),
                 proposed_value=fields[field], model=MODEL,
                 prompt_version=version_tag, grounding=fields.get("grounding"),
             )

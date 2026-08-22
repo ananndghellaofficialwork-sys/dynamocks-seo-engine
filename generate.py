@@ -238,6 +238,15 @@ def generate_for_products(
     # would pay for tokens the prompt has no instruction to use.
     use_taken = version_tag == "v4"
 
+    # Keyword grounding arrived with v6. vocab is loaded ONCE here, not inside
+    # the loop -- it is the same 60 rows for every product in the run, and
+    # keyword_block() renders it as the cached prefix of every message, so
+    # re-querying it per product would both waste a query and risk two
+    # products in the same run seeing a slightly different list if the table
+    # changed mid-run.
+    use_keywords = version_tag == "v6"
+    vocab = keywords.vocabulary(conn, limit=60) if use_keywords else None
+
     print(f"{len(products)} products need seo_title — generating with {model_ref}")
     print(f"prompt listing-{version_tag}.md — "
           + (f"image grounding ON, up to {_MAX_IMAGES} photos per product"
