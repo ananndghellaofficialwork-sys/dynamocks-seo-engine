@@ -539,3 +539,103 @@ def _selftest_images_json():
 
 if __name__ == "__main__":
     main()
+
+
+_COLLECTIONS_QUERY = """
+query FetchCollections($first: Int!, $after: String) {
+    collections(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        edges {
+            node {
+                id
+                handle
+                title
+                descriptionHtml
+                updatedAt
+                seo { title description }
+                productsCount { count }
+                image { url }
+                products(first: __MEMBERS__) {
+                    edges { node { title } }
+                }
+            }
+        }
+    }
+}
+""".replace("__MEMBERS__", "30")
+
+
+def fetch_collections():
+    """
+    WHAT IT DOES:
+      Mirrors every collection into the local `collections` table, along with
+      up to 30 member product titles per collection.
+
+      Called by: the operator, from the REPL — `python3 -c "import fetch;
+                 fetch.fetch_collections()"`. Kept out of main() deliberately:
+                 the product fetch runs before every generate run, and a
+                 collection fetch does not need to.
+
+      In the pipeline: the live Shopify store
+                         -> fetch_collections()
+                         -> collections table
+                         -> generate.generate_for_collections()
+
+    WHY IT IS ITS OWN FUNCTION:
+      The rejected alternative was extending main() to fetch both. They have
+      different cadences — products change daily, collections change a few
+      times a year — and folding them together would mean paying for 19
+      collection reads on every one of the frequent product runs.
+
+      The member titles are the reason this exists at all. A collection has no
+      photograph of itself and no fibre composition; what it IS is the set of
+      products inside it. Thirty titles is enough for a model to see that
+      "Dotty Delight" is polka dots and "Cotton Excellence" is nothing in
+      particular — and 30 is a cap on the SAMPLE, not a truncation of the
+      collection: products_count records the real size alongside it.
+
+    WHAT IT RETURNS, AND WHO CONSUMES IT:
+      None. Side effect: collections table populated and committed. Prints a
+      per-collection line so the operator can see the member sample landed
+      rather than trusting a success message.
+    """
+    conn = db.connect()
+    db.init_schema(conn)
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    cursor, total = None, 0
+    while True:
+        body = shopify_graphql(_COLLECTIONS_QUERY, {"first": 50, "after": cursor})
+        block = body["data"]["collections"]
+
+        for edge in block["edges"]:
+            node = edge["node"]
+            members = [e["node"]["title"] for e in node["products"]["edges"]]
+            db.upsert_collection(conn, {
+                "gid": node["id"],
+                "handle": node["handle"],
+                "title": node["title"],
+                "body_html": node["descriptionHtml"],
+                "seo_title": node["seo"]["title"],
+                "seo_description": node["seo"]["description"],
+                "products_count": node["productsCount"]["count"],
+                "member_titles": json.dumps(members),
+                "image_url": (node["image"] or {}).get("url"),
+                "store_updated_at": node["updatedAt"],
+                "fetched_at": now,
+            })
+            total += 1
+            flag = "" if node["seo"]["title"] else "   <-- no seo title"
+            print(f"  {node['productsCount']['count']:>4} products  "
+                  f"{node['title'][:44]:<44} {len(members):>2} sampled{flag}")
+
+        conn.commit()
+        if not block["pageInfo"]["hasNextPage"]:
+            break
+        cursor = block["pageInfo"]["endCursor"]
+
+    missing = conn.execute(
+        "SELECT COUNT(*) FROM collections WHERE seo_title IS NULL OR seo_title = ''"
+    ).fetchone()[0]
+    print(f"\ndone — {total} collections, {missing} with no SEO title")
+    conn.close()

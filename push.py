@@ -72,6 +72,39 @@ _FIELD_TO_SEO_KEY = {
     "seo_description": "description",
 }
 
+# Fields that are GENERATED but must never be written to the store, and the
+# reason each is refused. DESIGN-v2 §3a says this refusal is hard-coded here;
+# until 2026-08-21 it was not, and a product_title proposal would have fallen
+# through to the _FIELD_TO_SEO_KEY lookup and raised a bare KeyError — a
+# failure that reads like a bug rather than a policy.
+#
+# The distinction matters. An unknown field is a mistake. These are known,
+# deliberate, and refused on purpose, and the error should say so.
+_NEVER_PUSH = {
+    "product_title":
+        "product.title is the store's H1 and the strongest on-page signal. "
+        "An autonomous rewrite can torch brand voice across a live revenue "
+        "store, so it is generated as a suggestion for the owner to apply by "
+        "hand in Shopify admin. There is no promotion path — see §3a.",
+    "body_description":
+        "editing populated body copy is a different risk class from filling a "
+        "null field, and it has no verify.py path yet.",
+}
+
+
+def _refuse_if_never_push(field: str) -> None:
+    """
+    Raise before a request is built if this field may never reach the store.
+
+    Called first by push_one(), ahead of every other check. A design-doc rule
+    is a promise; a raised exception is a guarantee, and this is the one place
+    that distinction can be enforced.
+    """
+    if field in _NEVER_PUSH:
+        raise ValueError(
+            f"REFUSED: {field} is never pushable. {_NEVER_PUSH[field]}"
+        )
+
 _LIVE_FIELD_QUERY = """
 query PushReadProduct($id: ID!) {
     product(id: $id) {
@@ -223,6 +256,12 @@ def push_one(conn: sqlite3.Connection, gid: str, field: str, live: bool = False)
       staleness guard tripped. None means "no attempt was made"; a dict means
       an attempt was made and its outcome is in the dict.
     """
+    # FIRST, before the proposal is even read. A refusal must not depend on
+    # whether a row happens to exist — the field is forbidden either way, and
+    # checking later would mean the guard is skipped for exactly the products
+    # that have no proposal yet.
+    _refuse_if_never_push(field)
+
     proposal = get_proposal(conn, gid, field)
     if proposal is None:
         print(f"no proposal for {gid} / {field} — nothing to push")

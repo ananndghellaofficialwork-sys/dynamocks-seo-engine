@@ -31,7 +31,7 @@ import generate
 MODE = sys.argv[1] if len(sys.argv) > 1 else "duplicates"
 WRITE = "--write" in sys.argv
 MODEL = "gemini:gemini-2.5-flash"
-VERSION = "v5"
+VERSION = "v6"
 
 conn = db.connect()
 db.init_schema(conn)
@@ -230,7 +230,7 @@ for index, gid in enumerate(gids):
     product = conn.execute(
         """
         SELECT gid, handle, title, product_type, tags,
-               seo_description, seo_title, images
+               seo_description, seo_title, images, body_html, material
         FROM products WHERE gid = :gid
         """,
         {"gid": gid},

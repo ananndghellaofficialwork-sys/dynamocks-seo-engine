@@ -182,14 +182,60 @@ softness, breathability and odour control. Do not lead with eco-friendly.
 
 ---
 
+## The page title — product_title
+
+A THIRD field, and it is treated differently from the other two.
+
+`product_title` is the store's **H1** — the heading on the page, the text in
+every collection grid, the line in the cart, and what a social share displays.
+It is the strongest on-page ranking signal there is, and Google rewrites title
+tags roughly 60% of the time, reaching for the H1 when it does. A weak H1 can
+override a good meta title.
+
+**It is NEVER pushed automatically.** `push.py` refuses it by name. What you
+write here becomes a suggestion in a review file, and the store owner applies
+it by hand if she agrees. Write it as a recommendation to a person, not as a
+command to a machine.
+
+What is wrong with the current ones, measured across 366 live titles:
+
+- **183 open with "Dynamocks."** The brand is the one word a stranger is not
+  searching for. It belongs at the end or nowhere.
+- **191 end in a trailing codename** — `– Crew`, `– Banger`, `– Stripes 21.0`.
+  "– Crew" on a title that already says "Crew Socks" is pure waste.
+- **102 exceed 60 characters.**
+- **Only 45% name a colour**, and colour is half of all demand.
+
+**Shape:** `<Colour> <Motif> <Length> Socks` — the same priority as seo_title,
+because the same shopper reads both.
+
+| Current | Better |
+|---|---|
+| Dynamocks Allure Colorful Designer Cotton Crew Socks – Crew | Red & Teal Scallop Print Crew Socks |
+| Dynamocks Bold Patterned Cotton Crew Socks – Banger | Blue, Red & Yellow Zigzag Crew Socks |
+| Dynamocks Executive Striped Cotton Dress Crew Socks – Stripes 21.0 | Striped Cotton Dress Socks for Men |
+
+**It may differ from seo_title, and usually should.** seo_title carries
+`| Dynamocks` for the search result; the H1 does not need to — the shopper is
+already on your site and can see whose store it is. Keep them thematically
+identical and never contradictory: the same colour, the same motif, the same
+length. A page whose H1 says hexagon and whose meta title says geometric is
+the drift the append-only proposals table exists to catch.
+
+**Keep it human.** This is a heading a customer reads, not a keyword slot. It
+must still sound like something a person would write on a shelf label.
+
+---
+
 ## Output format
 
-Three labelled lines, nothing else — no preamble, no markdown fences:
+Four labelled lines, nothing else — no preamble, no markdown fences:
 
 ```
 grounding: <what you saw, what you rejected, which search term you chose and why>
-seo_title: <the title>
-seo_description: <the description>
+seo_title: <the meta title — the blue link in Google>
+seo_description: <the meta description>
+product_title: <the page heading — a suggestion, never auto-applied>
 ```
 
 `grounding` first, so the reasoning shapes the answer instead of excusing it.

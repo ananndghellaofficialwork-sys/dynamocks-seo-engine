@@ -46,6 +46,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+import db
 import keywords
 
 load_dotenv()  # populate os.environ from .env; individual keys are read at call time, not here
@@ -118,6 +119,15 @@ _GROUNDING_LINE = re.compile(
 # The refusal path. A model that returns this instead of the two fields has
 # followed instructions, not failed — the distinction has to survive parsing or
 # a correct refusal reads as a broken call.
+# product_title is the store's H1. Parsed from its own pattern rather than
+# folded into _FIELD_LINE, because that pattern requires an "seo" prefix and
+# this field has none — and because the two must stay visibly separate: one is
+# pushable and one is refused by name in push.py.
+_PRODUCT_TITLE_LINE = re.compile(
+    r"[^\w]*product[._ ]?title[^\w:]*:?\s*(.*)",
+    re.IGNORECASE,
+)
+
 _NEEDS_HUMAN_LINE = re.compile(
     r"[^\w]*needs[._ ]?human[^\w:]*:?\s*(.*)",
     re.IGNORECASE,
@@ -294,7 +304,12 @@ def generate_for_products(
                 print(f"  ? {product['handle']} — NEEDS HUMAN: {fields['needs_human'][:70]}")
                 continue
 
-            for field in ("seo_title", "seo_description"):
+            # product_title joins the loop but can never reach the store:
+            # push.py refuses it by name. Generated in the SAME call as the
+            # other two so all three share one reading of the photograph —
+            # generating it separately is how a page ends up with an H1 saying
+            # hexagon and a meta title saying geometric.
+            for field in ("seo_title", "seo_description", "product_title"):
                 proposed = fields[field]
                 if not proposed:
                     # Left deliberately unwritten. proposed_value is NOT NULL, and
@@ -314,7 +329,11 @@ def generate_for_products(
                     # REPLACING something rather than filling a blank, and a
                     # reviewer cannot judge a replacement without seeing what
                     # it replaces.
-                    current_value=product[field],
+                    # product_title's "current" is the live product title, not
+                    # a seo_ column — the reviewer is comparing the suggestion
+                    # against the heading that is on the page today.
+                    current_value=(product["title"] if field == "product_title"
+                                   else product[field]),
                     proposed_value=proposed,
                     model=model_ref,
                     prompt_version=version_tag,
@@ -383,7 +402,12 @@ def load_prompt(version: str) -> tuple[str, str]:
       proposal row — so when a batch of output turns out to be bad, the
       prompt that produced it is a query, not a guess.
     """
-    path = PROMPT_DIR / f"listing-{version}.md"
+    # A version like "v6" names listing-v6.md. A version that already carries
+    # its own family — "collection-v1" — names collection-v1.md directly.
+    # Collections are not listings and forcing them under one prefix would
+    # make the filename lie about what the file is.
+    stem = version if "-" in version else f"listing-{version}"
+    path = PROMPT_DIR / f"{stem}.md"
     return path.read_text(encoding="utf-8"), version
 
 
@@ -1377,7 +1401,7 @@ def parse_response(text: str) -> dict:
       MISSING line and no row at all.
     """
     fields = {"seo_title": None, "seo_description": None,
-              "grounding": None, "needs_human": None}
+              "product_title": None, "grounding": None, "needs_human": None}
     if not text:
         return fields
 
@@ -1396,6 +1420,11 @@ def parse_response(text: str) -> dict:
             match = _NEEDS_HUMAN_LINE.match(line)
             if match:
                 fields["needs_human"] = match.group(1).strip(_DECORATION) or None
+                continue
+        if fields["product_title"] is None:
+            match = _PRODUCT_TITLE_LINE.match(line)
+            if match:
+                fields["product_title"] = match.group(1).strip(_DECORATION) or None
 
     for index, line in enumerate(lines):
         match = _FIELD_LINE.match(line)
@@ -1500,3 +1529,118 @@ def save_proposal(
             "reviewer_note": reviewer_note,
         },
     )
+
+
+def generate_for_collections(
+    conn: sqlite3.Connection,
+    limit: int,
+    model_ref: str,
+    prompt_version: str = "collection-v1",
+) -> None:
+    """
+    WHAT IT DOES:
+      The collections equivalent of generate_for_products. Reads collections
+      with no SEO title and no proposal, builds a message from their MEMBER
+      PRODUCT TITLES rather than from a photograph, and appends proposals.
+
+      Called by: the operator, from the REPL, once per run.
+
+      In the pipeline: collections table (filled by fetch.fetch_collections)
+                         -> generate_for_collections()
+                         -> proposals, status 'draft'
+                         -> review.py
+
+    WHY IT IS ITS OWN FUNCTION:
+      The rejected alternative was a `kind="collection"` flag threaded through
+      generate_for_products. Almost nothing is shared: no photographs, no fibre
+      composition, no multipack/dress routing, and the grounding is a list of
+      member titles instead of an image. The two loops would have been one
+      function with two disjoint halves and an if-statement deciding which half
+      ran — which is two functions wearing one name.
+
+      What IS shared is reused directly: call_model, parse_response,
+      save_proposal and the keyword vocabulary. The duplication is in the loop,
+      not in the logic that matters.
+
+    WHAT IT RETURNS, AND WHO CONSUMES IT:
+      None. Side effect: proposal rows whose gid is a COLLECTION gid, not a
+      product gid.
+
+      That distinction is deliberate and load-bearing: proposals.gid has a
+      foreign key to products(gid), so a collection proposal will fail that
+      constraint unless the collection row exists in products — it does not.
+      The rows are therefore written with the FK relaxed for this table's
+      lifetime, and push.py must learn collectionUpdate before any of them can
+      ship. Until then these are review-only, which is the correct state for
+      the highest-reach pages on the store.
+    """
+    prompt_text, version_tag = load_prompt(prompt_version)
+    vocab = keywords.vocabulary(conn, limit=40)
+
+    rows = conn.execute(
+        """
+        SELECT gid, handle, title, body_html, seo_title, seo_description,
+               products_count, member_titles
+        FROM collections
+        WHERE (seo_title IS NULL OR seo_title = '' OR LENGTH(seo_title) > :max)
+          AND delisted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM collection_proposals p
+                          WHERE p.gid = collections.gid AND p.superseded_by IS NULL)
+        ORDER BY products_count DESC
+        LIMIT :limit
+        """,
+        {"limit": limit, "max": _MAX_TITLE_CHARS},
+    ).fetchall()
+
+    print(f"{len(rows)} collections need SEO — ordered by reach, biggest first")
+
+    for index, row in enumerate(rows):
+        if index:
+            time.sleep(_PRODUCT_PAUSE)
+
+        members = json.loads(row["member_titles"] or "[]")
+        message = (
+            f"{prompt_text}\n"
+            f"{keyword_block(vocab)}"
+            "\n## COLLECTION\n"
+            "These are the only facts about this page. Use nothing else.\n"
+            "\n"
+            f"collection name: {row['title']}\n"
+            f"url handle: {row['handle']}\n"
+            f"products on this page: {row['products_count']}\n"
+            f"current seo.title: {row['seo_title'] or '(empty)'}\n"
+            f"current seo.description: {row['seo_description'] or '(empty)'}\n"
+            "\n"
+            f"member products ({len(members)} of {row['products_count']} sampled) —\n"
+            "this is your grounding, read it and describe what is actually here:\n"
+            + "".join(f"  - {m}\n" for m in members)
+        )
+
+        try:
+            fields = parse_response(call_model(message, model_ref))
+        except Exception as error:
+            print(f"  ! {row['handle']} FAILED — {type(error).__name__}: {error}")
+            continue
+
+        if fields["needs_human"] and not fields["seo_title"]:
+            db.save_collection_proposal(
+                conn, gid=row["gid"], field="seo_title",
+                current_value=row["seo_title"],
+                proposed_value=fields["needs_human"], model=model_ref,
+                prompt_version=version_tag,
+                grounding=fields.get("grounding"), status="needs_human")
+            conn.commit()
+            print(f"  ? {row['handle']} — NEEDS HUMAN")
+            continue
+
+        for field in ("seo_title", "seo_description"):
+            if not fields[field]:
+                print(f"  ! {row['handle']} — {field} MISSING")
+                continue
+            db.save_collection_proposal(
+                conn, gid=row["gid"], field=field,
+                current_value=row[field], proposed_value=fields[field],
+                model=model_ref, prompt_version=version_tag,
+                grounding=fields.get("grounding"))
+        conn.commit()
+        print(f"  {row['products_count']:>4} products  {fields['seo_title']}")

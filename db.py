@@ -141,6 +141,68 @@ CREATE TABLE IF NOT EXISTS seo_exclusions
     excluded_at        TEXT NOT NULL            -- ISO-8601 UTC timestamp
 );
 
+-- collections: the category pages. Mirrored the same way products are.
+--
+-- Added 2026-08-21, after the search data made the case impossible to ignore:
+-- product pages carry 22,973 of 26,470 impressions and collections carry 270.
+-- Every competitor ranking for a head term like "ankle length socks" does it
+-- with a COLLECTION page — adidas, Nike, Darn Tough, Sealskinz — while this
+-- store answers with a single product and sits at position 9 with no clicks.
+--
+-- The grounding is different from a product's. A collection has no photograph
+-- of itself and no fibre composition; what it IS is the set of products in it.
+-- member_titles holds that set, and it is the only honest source for what the
+-- page should claim to be.
+CREATE TABLE IF NOT EXISTS collections
+(
+    gid                TEXT PRIMARY KEY,   -- gid://shopify/Collection/...
+    handle             TEXT NOT NULL,      -- URL slug; often more accurate than the title
+    title              TEXT NOT NULL,      -- the merchandising name, e.g. "Dotty Delight"
+    body_html          TEXT,               -- on-page description, usually empty
+    seo_title          TEXT,               -- NULL on 12 of 19 today
+    seo_description    TEXT,
+    products_count     INTEGER,            -- how many products the page lists
+    member_titles      TEXT,               -- JSON array of product titles — the grounding
+    image_url          TEXT,
+    store_updated_at   TEXT,
+    fetched_at         TEXT NOT NULL,
+    delisted_at        TEXT
+);
+
+-- collection_proposals: the same job as `proposals`, for category pages.
+--
+-- A SEPARATE TABLE, and the reason is a foreign key. proposals.gid REFERENCES
+-- products(gid) — that constraint is real and it is doing useful work, so a
+-- collection gid cannot go in that table without either violating it or
+-- removing it. Removing it would mean rebuilding a table that already holds
+-- 700+ rows AND is pointed at by pushes.proposal_id, which is the undo log for
+-- real writes to a live store. That is not a rebuild worth risking to save one
+-- table.
+--
+-- The rejected alternative was inserting collections into `products` so the FK
+-- would pass. It would work and it would be a lie: every count, every queue and
+-- every "how many products do we have" answer would silently include category
+-- pages.
+--
+-- Append-only, same as proposals. Same columns, minus the ones that only make
+-- sense for a product.
+CREATE TABLE IF NOT EXISTS collection_proposals
+(
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    gid                TEXT NOT NULL REFERENCES collections(gid),
+    field              TEXT NOT NULL,           -- 'seo_title' | 'seo_description'
+    current_value      TEXT,
+    proposed_value     TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    prompt_version     TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    grounding          TEXT,
+    eval_score         REAL,
+    status             TEXT NOT NULL,
+    reviewer_note      TEXT,
+    superseded_by      INTEGER
+);
+
 -- keywords: what people actually type. The demand side of the pipeline.
 --
 -- Everything before this table describes what a product IS — its photo, its
@@ -555,6 +617,101 @@ def save_score(conn: sqlite3.Connection, row: dict) -> int:
             "judge_model": row["judge_model"],
             "scored_at": datetime.datetime.now(datetime.timezone.utc)
                                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    )
+    return cursor.lastrowid
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# upsert_collection(conn, row)
+#
+# WHY:
+#   Same contract as upsert_product, for the collections mirror. Kept as its
+#   own function rather than a generic upsert(table, row) because the two
+#   tables have different columns and a generic version would build SQL from a
+#   dict's keys — which is how a typo in a caller silently writes to the wrong
+#   column instead of failing.
+#
+# WHAT IT DOES:
+#   Inserts, or overwrites every mirrored column when the gid already exists.
+#   Does NOT commit; the caller owns the transaction.
+#
+# RETURNS:
+#   Nothing. One row staged in the open transaction.
+#
+# Called by: fetch.py — once per collection.
+# ─────────────────────────────────────────────────────────────────────────────
+def upsert_collection(conn: sqlite3.Connection, row: dict) -> None:
+    conn.execute(
+        """
+        INSERT INTO collections
+        (
+            gid, handle, title, body_html, seo_title, seo_description,
+            products_count, member_titles, image_url, store_updated_at, fetched_at
+        )
+        VALUES
+        (
+            :gid, :handle, :title, :body_html, :seo_title, :seo_description,
+            :products_count, :member_titles, :image_url, :store_updated_at, :fetched_at
+        )
+        ON CONFLICT(gid) DO UPDATE SET
+            handle           = excluded.handle,
+            title            = excluded.title,
+            body_html        = excluded.body_html,
+            seo_title        = excluded.seo_title,
+            seo_description  = excluded.seo_description,
+            products_count   = excluded.products_count,
+            member_titles    = excluded.member_titles,
+            image_url        = excluded.image_url,
+            store_updated_at = excluded.store_updated_at,
+            fetched_at       = excluded.fetched_at
+        """,
+        row,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# save_collection_proposal(conn, ...)
+#
+# WHY:
+#   generate.save_proposal writes to `proposals`, whose gid is foreign-keyed to
+#   products. A collection gid fails that constraint. This is the same append
+#   with the same discipline, aimed at the table that can hold it.
+#
+# WHAT IT DOES:
+#   Appends one row. No UPDATE path and no ON CONFLICT: a revision is a new row
+#   pointed at by superseded_by, exactly as with product proposals.
+#   Does NOT commit.
+#
+# RETURNS:
+#   The new row id, so a caller writing two fields can link them.
+#
+# Called by: generate.generate_for_collections — once per field per collection.
+# ─────────────────────────────────────────────────────────────────────────────
+def save_collection_proposal(conn: sqlite3.Connection, gid: str, field: str,
+                             current_value, proposed_value: str, model: str,
+                             prompt_version: str, grounding=None,
+                             status: str = "draft") -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO collection_proposals
+        (
+            gid, field, current_value, proposed_value,
+            model, prompt_version, created_at, grounding, status
+        )
+        VALUES
+        (
+            :gid, :field, :current_value, :proposed_value,
+            :model, :prompt_version, :created_at, :grounding, :status
+        )
+        """,
+        {
+            "gid": gid, "field": field, "current_value": current_value,
+            "proposed_value": proposed_value, "model": model,
+            "prompt_version": prompt_version, "grounding": grounding,
+            "status": status,
+            "created_at": datetime.datetime.now(datetime.timezone.utc)
+                                   .strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
     )
     return cursor.lastrowid
